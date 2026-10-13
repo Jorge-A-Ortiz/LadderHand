@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LadderHand — Consola de PLC a diagrama ladder</title>
+<style>
+/* ===== TOKENS DE DISEÑO ===== */
+:root{
+  --bg:#f5f7fa; --panel:#ffffff; --ink:#1e2a38; --muted:#6b7a8d;
+  --accent:#0e7c66; --accent-soft:#e6f4f0; --error:#d64545; --error-soft:#fdeaea;
+  --warn:#c98a00; --ok:#2e9e5b; --line:#d7dee8; --rail:#33475b;
+  --mono:ui-monospace,'Cascadia Code',Consolas,'Courier New',monospace;
+  --sans:system-ui,'Segoe UI',Roboto,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--sans);
+  display:grid;grid-template-rows:48px 1fr 28px;overflow:hidden}
+button{font:13px var(--sans)}
+[hidden]{display:none!important}
+
+/* ===== BARRA SUPERIOR ===== */
+#toolbar{display:flex;align-items:center;gap:8px;padding:0 12px;background:var(--panel);
+  border-bottom:1px solid var(--line);z-index:20}
+#toolbar .brand{font-weight:800;font-size:15px;color:var(--accent);margin-right:6px;white-space:nowrap}
+#projectName{flex:0 1 220px;min-width:120px;padding:5px 8px;border:1px solid var(--line);
+  border-radius:6px;font:13px var(--sans);background:var(--bg)}
+#projectName:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.btn{padding:5px 11px;border:1px solid var(--line);background:#fff;border-radius:6px;
+  cursor:pointer;color:var(--ink);transition:background .12s}
+.btn:hover{background:var(--accent-soft)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.spacer{flex:1}
+.dd{position:relative}
+.menu{position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--line);
+  border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.14);min-width:180px;z-index:60;overflow:hidden}
+.menu button{display:block;width:100%;text-align:left;padding:9px 14px;border:0;background:none;cursor:pointer}
+.menu button:hover{background:var(--accent-soft)}
+
+/* ===== ZONA DIVIDIDA ===== */
+#main{display:flex;min-height:0}
+#consolePane{display:flex;flex-direction:column;flex:0 0 36%;min-width:260px;background:var(--panel)}
+#divider{flex:0 0 6px;cursor:col-resize;background:var(--line)}
+#divider:hover{background:var(--accent)}
+#diagramPane{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+.pane-title{font:11px var(--sans);letter-spacing:.08em;color:var(--muted);padding:6px 10px;
+  border-bottom:1px solid var(--line);display:flex;justify-content:space-between;
+  align-items:center;background:#eef2f7;flex-wrap:wrap;gap:6px}
+
+/* ===== CONSOLA ===== */
+#editorWrap{flex:1;display:flex;min-height:0}
+#gutter{flex:0 0 46px;overflow:hidden;background:#eef2f7;border-right:1px solid var(--line);
+  user-select:none}
+#gutterInner{padding:8px 8px 8px 0}
+#gutterInner .ln{height:20px;line-height:20px;font:12px var(--mono);color:var(--muted);text-align:right}
+#gutterInner .ln.err{background:var(--error-soft);color:var(--error);font-weight:700}
+#gutterInner .ln.warn{background:#fdf3dd}
+#console{flex:1;resize:none;border:0;outline:none;padding:8px 10px;background:var(--panel);
+  color:var(--ink);font:13px/20px var(--mono);white-space:pre;overflow:auto;min-width:0}
+
+/* ===== PANEL DE ERRORES ===== */
+#errorPanel{border-top:1px solid var(--line);background:#fff;max-height:45%;display:flex;flex-direction:column}
+#errorHeader{padding:6px 10px;cursor:pointer;font:12px var(--sans);display:flex;gap:8px;align-items:center;color:var(--muted)}
+.badge{border-radius:10px;padding:1px 8px;font-size:11px;color:#fff}
+.badge.error{background:var(--error)}
+.badge.warning{background:var(--warn)}
+#errorList{overflow:auto;border-top:1px dashed var(--line)}
+.err-item{padding:6px 10px;font:12px var(--sans);border-bottom:1px solid #f0f3f7;cursor:pointer}
+.err-item:hover{background:var(--error-soft)}
+.err-item.warn:hover{background:#fdf3dd}
+.err-item .eno{color:var(--error);font-weight:700;margin-right:6px;font-family:var(--mono)}
+.err-item.warn .eno{color:var(--warn)}
+.err-item .ecause{display:inline}
+.err-item .ehint{color:var(--muted);display:block;margin-top:1px}
+.err-item .etext{font-family:var(--mono);color:var(--ink);margin-right:6px}
+
+/* ===== SIMULACIÓN ===== */
+#simPanel{display:flex;gap:12px;align-items:center;padding:6px 10px;border-bottom:1px solid var(--line);
+  background:var(--panel);flex-wrap:wrap;min-height:38px}
+#simPanel .sw{display:inline-flex;align-items:center;gap:6px;font:12px var(--mono);cursor:pointer}
+#simPanel .sw input{position:absolute;opacity:0;width:0;height:0}
+#simPanel .knob{width:34px;height:18px;border-radius:9px;background:#c6cfda;position:relative;transition:background .15s}
+#simPanel .knob::after{content:'';position:absolute;width:14px;height:14px;border-radius:50%;
+  background:#fff;top:2px;left:2px;transition:left .15s}
+#simPanel .sw input:checked + .knob{background:var(--accent)}
+#simPanel .sw input:checked + .knob::after{left:18px}
+#simPanel .sw input:focus-visible + .knob{outline:2px solid var(--accent)}
+#simEmpty{font:12px var(--sans);color:var(--muted)}
+#simPanel .grp{display:flex;gap:6px;align-items:center;margin-left:auto}
+
+/* ===== DIAGRAMA ===== */
+#diagramScroll{flex:1;overflow:auto;background:var(--bg)}
+#diagram{display:block}
+.wire{stroke:var(--rail);stroke-width:2;fill:none}
+.wire.energized{stroke:var(--accent);stroke-width:3;filter:drop-shadow(0 0 3px rgba(14,124,102,.55))}
+.sym{stroke:var(--rail);stroke-width:2;fill:none}
+.sym.energized{stroke:var(--accent);stroke-width:3;filter:drop-shadow(0 0 3px rgba(14,124,102,.55))}
+.box{fill:#fff;stroke:var(--rail);stroke-width:2}
+.box.energized{stroke:var(--accent);stroke-width:3;filter:drop-shadow(0 0 3px rgba(14,124,102,.55))}
+text.dev{font:12px var(--mono);fill:var(--ink)}
+text.val{font:11px var(--mono);fill:var(--accent);font-weight:700}
+text.preset{font:11px var(--mono);fill:var(--muted)}
+.rungnum{font:11px var(--mono);fill:var(--muted)}
+.ph{font:13px var(--sans);fill:var(--muted)}
+.ghost{opacity:.35}
+
+/* ===== BARRA DE ESTADO ===== */
+#statusbar{display:flex;gap:18px;align-items:center;padding:0 12px;background:#eef2f7;
+  border-top:1px solid var(--line);font:12px var(--sans);color:var(--muted)}
+#stDirty{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block}
+#stDirty.clean{background:transparent;border:1px solid var(--line)}
+
+/* ===== BANNER / TOASTS / MODALES ===== */
+#recoverBanner{position:fixed;top:56px;left:50%;transform:translateX(-50%);background:#fff8e1;
+  border:1px solid #e6c200;padding:8px 14px;border-radius:8px;display:flex;gap:10px;
+  align-items:center;z-index:70;box-shadow:0 4px 14px rgba(0,0,0,.12);font:13px var(--sans)}
+#toasts{position:fixed;right:14px;bottom:38px;z-index:80;display:flex;flex-direction:column;align-items:flex-end}
+.toast{background:#22303f;color:#fff;padding:8px 14px;border-radius:8px;margin-top:8px;
+  font:13px var(--sans);box-shadow:0 4px 12px rgba(0,0,0,.25);max-width:420px}
+.toast.err{background:var(--error)}
+.toast.ok{background:var(--ok)}
+.overlay{position:fixed;inset:0;background:rgba(20,30,40,.45);display:flex;
+  align-items:center;justify-content:center;z-index:50}
+.modal{background:#fff;border-radius:10px;max-width:680px;width:92%;max-height:82vh;
+  display:flex;flex-direction:column;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.modal header{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;
+  justify-content:space-between;align-items:center;font-weight:700}
+.modal .modal-body{padding:12px 14px;overflow:auto}
+.lib-item{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
+.lib-item .lname{font-weight:600}
+.lib-item .lmeta{font:11px var(--sans);color:var(--muted)}
+.lib-item .lactions{display:flex;gap:4px}
+.lib-item .lactions .btn{padding:3px 8px;font-size:12px}
+.lib-section{font:11px var(--sans);letter-spacing:.08em;color:var(--muted);margin:10px 0 6px}
+kbd{font:12px var(--mono);background:#eef2f7;border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:4px;padding:0 5px}
+.help-tbl{border-collapse:collapse;width:100%}
+.help-tbl th,.help-tbl td{border:1px solid var(--line);padding:5px 8px;font-size:12px;text-align:left;vertical-align:top}
+.help-tbl code{font:12px var(--mono);background:#eef2f7;padding:0 4px;border-radius:4px}
+.help-note{font-size:12px;color:var(--muted);margin-top:8px}
+
+/* ===== IMPRESIÓN (PDF) ===== */
+@media print{
+  @page{size:landscape;margin:10mm}
+  #toolbar,#consolePane,#divider,#statusbar,#simPanel,#toasts,#recoverBanner,.overlay{display:none!important}
+  body{display:block;overflow:visible;background:#fff}
+  #diagramPane{position:static}
+  #diagramScroll{overflow:visible}
+  #diagram{width:100%!important;height:auto!important}
+}
+</style>
+</head>
+<body>
+
+<header id="toolbar">
+  <span class="brand">⚡ LadderHand</span>
+  <input id="projectName" value="Sin título" aria-label="Nombre del proyecto" spellcheck="false">
+  <button class="btn" id="btnNew" title="Nuevo proyecto">Nuevo</button>
+  <button class="btn" id="btnSave" title="Guardar (Ctrl+S)">Guardar</button>
+  <button class="btn" id="btnOpen" title="Abrir proyecto">Abrir</button>
+  <button class="btn" id="btnLibrary" title="Biblioteca (Ctrl+L)">Biblioteca</button>
+  <div class="dd">
+    <button class="btn" id="btnExport" title="Exportar diagrama">Exportar ▾</button>
+    <div class="menu" id="exportMenu" hidden>
+      <button data-export="svg">SVG (vector)</button>
+      <button data-export="png">PNG (imagen 2x)</button>
+      <button data-export="pdf">PDF (imprimir diagrama)</button>
+    </div>
+  </div>
+  <span class="spacer"></span>
+  <button class="btn" id="btnHelp" title="Ayuda (F1)">Ayuda</button>
+</header>
+
+<main id="main">
+  <section id="consolePane" aria-label="Consola de comandos">
+    <div class="pane-title"><span>CONSOLA (NETLIST)</span><span id="consoleHint">Enter = nueva instrucción · ; = comentario</span></div>
+    <div id="editorWrap">
+      <div id="gutter" aria-hidden="true"><div id="gutterInner"></div></div>
+      <textarea id="console" spellcheck="false" wrap="off"
+        aria-label="Editor de instrucciones netlist"></textarea>
+    </div>
+    <div id="errorPanel">
+      <div id="errorHeader" role="button" tabindex="0" aria-expanded="true">
+        <span>Diagnóstico</span>
+        <span class="badge error" id="badgeErrors" hidden>0 errores</span>
+        <span class="badge warning" id="badgeWarnings" hidden>0 avisos</span>
+        <span id="errChevron" style="margin-left:auto">▾</span>
+      </div>
+      <div id="errorList"></div>
+    </div>
+  </section>
+
+  <div id="divider" role="separator" aria-orientation="vertical" aria-label="Redimensionar paneles"></div>
+
+  <section id="diagramPane" aria-label="Diagrama ladder">
+    <div class="pane-title">
+      <span>DIAGRAMA LADDER (EN VIVO)</span>
+      <span id="diagramMeta"></span>
+    </div>
+    <div id="simPanel">
+      <span id="simEmpty">Pulsa ▶ RUN para simular</span>
+      <span class="grp">
+        <button class="btn" id="btnRun" title="Simular (F5)">▶ RUN</button>
+        <button class="btn" id="btnReset" title="Reiniciar simulación">⟲ RESET</button>
+      </span>
+    </div>
+    <div id="diagramScroll">
+      <svg id="diagram" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Diagrama ladder"></svg>
+    </div>
+  </section>
+</main>
+
+<footer id="statusbar">
+  <span id="stRungs">0 rungs · 0 líneas</span>
+  <span id="stErrors"></span>
+  <span class="spacer"></span>
+  <span id="stAutosave"></span>
+  <span id="stDirtyWrap"><span id="stDirty" class="clean" title="Estado de guardado"></span> <span id="stDirtyText">guardado</span></span>
+</footer>
+
+<div id="recoverBanner" hidden>
+  <span>¿Recuperar la última sesión?</span>
+  <button class="btn" id="btnRecover">Recuperar</button>
+  <button class="btn" id="btnDiscard">Descartar</button>
+</div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<div class="overlay" id="modalLibrary" hidden>
+  <div class="modal" role="dialog" aria-label="Biblioteca de proyectos">
+    <header><span>Biblioteca de proyectos</span><button class="btn" data-close="modalLibrary">✕</button></header>
+    <div class="modal-body">
+      <div class="lib-section">EJEMPLOS INTEGRADOS (SOLO LECTURA)</div>
+      <div id="libExamples"></div>
+      <div class="lib-section">MIS PROYECTOS</div>
+      <div id="libProjects"></div>
+      <button class="btn" id="btnLibNew" style="margin-top:6px">+ Nuevo proyecto</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="modalHelp" hidden>
+  <div class="modal" role="dialog" aria-label="Ayuda: chuleta de instrucciones">
+    <header><span>Chuleta de instrucciones (dialecto v1)</span><button class="btn" data-close="modalHelp">✕</button></header>
+    <div class="modal-body" id="helpBody"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ==PURE-START==
+/* ===== 01 DIALECT ===== */
+const Dialect = (() => {
+  const OPS = ['LD','LDI','AND','ANI','OR','ORI','ANB','ORB','OUT','SET','RST','END'];
+  const DEV = /^([XYMTC])(\d{1,3})$/;
+  const KON = /^K(\d{1,4})$/;
+  function normalizeLine(raw){
+    let s = String(raw);
+    const ci = s.indexOf(';');
+    if (ci >= 0) s = s.slice(0, ci);
+    s = s.trim().replace(/\s+/g,' ').toUpperCase();
+    return s;
+  }
+  function parseDev(tok){
+    const m = DEV.exec(tok || '');
+    if (!m) return null;
+    const n = +m[2];
+    if (n > 255) return null;
+    return { family: m[1], num: n, id: m[1] + n };
+  }
+  function parseK(tok){
+    const m = KON.exec(tok || '');
+    return m ? +m[1] : null;
+  }
+  return { OPS, DEV, KON, normalizeLine, parseDev, parseK };
+})();
+
+/* ===== 02 PARSER ===== */
+const Parser = (() => {
+  const MAX_LINES = 2000;
+
+  function parse(code){
+    const errors = [], warnings = [], rungs = [];
+    let endLine = null, ended = false, sawInstr = false, tooBig = false;
+    let stack = [], current = null, coils = [], rungStart = 0;
+
+    const rawLines = String(code).replace(/\r\n?/g, '\n').split('\n');
+
+    function closeRung(){
+      if (current === null) return;
+      if (stack.length > 0){
+        // Compatibilidad didáctica: bloques LD sin combinar se unen en serie (ANB implícito)
+        warnings.push({
+          line: rungStart, text: '',
+          cause: stack.length === 1
+            ? 'Quedó 1 bloque sin combinar: se unió en serie automáticamente (ANB implícito).'
+            : `Quedaron ${stack.length} bloques sin combinar: se unieron en serie automáticamente (ANB implícito).`,
+          hint: 'En GX Works escribe ANB (u ORB si el enlace es paralelo) antes de la bobina para combinar los bloques de forma explícita.',
+          severity: 'warning'
+        });
+        let expr = current;
+        while (stack.length > 0){
+          expr = { kind: 'series', children: [stack.pop(), expr], line: rungStart };
+        }
+        current = expr;
+      }
+      if (coils.length === 0){
+        errors.push({
+          line: rungStart, text: '',
+          cause: `El rung que empieza en la línea ${rungStart} no tiene bobina`,
+          hint: 'Añade OUT, SET, RST, OUT T# K# o OUT C# K# antes del siguiente LD.',
+          severity: 'error'
+        });
+      } else {
+        rungs.push({ line: rungStart, expr: current, coils: coils });
+      }
+      current = null; coils = []; stack = [];
+    }
+
+    rawLines.forEach((raw, i) => {
+      const ln = i + 1;
+      if (ended){
+        const t = Dialect.normalizeLine(raw);
+        if (t) errors.push({ line: ln, text: t, cause: 'Hay código después de END',
+          hint: 'END debe ser la última instrucción del programa.', severity: 'error' });
+        return;
+      }
+      if (ln > MAX_LINES){
+        if (!tooBig){
+          tooBig = true;
+          errors.push({ line: MAX_LINES, text: '', cause: `Programa demasiado largo (más de ${MAX_LINES} líneas)`,
+            hint: 'Divide el programa o simplifícalo.', severity: 'error' });
+        }
+        return;
+      }
+      const text = Dialect.normalizeLine(raw);
+      if (!text) return;
+      sawInstr = true;
+      const parts = text.split(' ');
+      const op = parts[0];
+      const bad = (cause, hint) => errors.push({ line: ln, text, cause, hint, severity: 'error' });
+
+      if (op === 'END'){
+        if (parts.length > 1) bad('END no lleva operandos', 'Escribe solo END.');
+        closeRung(); ended = true; endLine = ln; return;
+      }
+
+      if (op === 'LD' || op === 'LDI'){
+        const dev = parts[1] ? Dialect.parseDev(parts[1]) : null;
+        if (!dev || parts.length !== 2){
+          bad('LD/LDI requiere un dispositivo (X, Y, M, T o C)', 'Ejemplo: LD X0'); return;
+        }
+        if (current !== null && coils.length > 0){
+          closeRung();          // el rung anterior ya tiene bobina: este LD abre rung nuevo
+          rungStart = ln;
+        } else if (current !== null){
+          stack.push(current);  // LD tras LD sin bobina: abre sub-bloque (ANB/ORB)
+        } else {
+          rungStart = ln;       // primera instrucción del rung
+        }
+        current = { kind: 'contact', pol: (op === 'LD' ? 'NO' : 'NC'), dev: dev.id, line: ln };
+        return;
+      }
+
+      if (op === 'AND' || op === 'ANI' || op === 'OR' || op === 'ORI'){
+        if (current === null){
+          bad(`Falta un LD/LDI antes de ${op}`, 'Todo rung comienza con LD o LDI. Ejemplo: LD X0'); return;
+        }
+        if (coils.length > 0){
+          bad(`La instrucción ${op} va después de la bobina del rung`,
+            'El rung terminó con OUT/SET/RST; inicia el siguiente con LD.'); return;
+        }
+        const dev = parts[1] ? Dialect.parseDev(parts[1]) : null;
+        if (!dev || parts.length !== 2){
+          bad(`${op} requiere un dispositivo (X, Y, M, T o C)`, 'Ejemplo: AND X1'); return;
+        }
+        const node = { kind: 'contact', pol: (op === 'AND' || op === 'OR') ? 'NO' : 'NC', dev: dev.id, line: ln };
+        current = (op.charAt(0) === 'A')
+          ? { kind: 'series', children: [current, node], line: ln }
+          : { kind: 'parallel', children: [current, node], line: ln };
+        return;
+      }
+
+      if (op === 'ANB' || op === 'ORB'){
+        if (current === null || stack.length === 0){
+          bad(`${op} necesita dos bloques previos para combinar`,
+            'Cada LD extra abre un bloque; combina dos con ANB (serie) u ORB (paralelo).');
+          return;
+        }
+        if (coils.length > 0){
+          bad(`La instrucción ${op} va después de la bobina del rung`,
+            'Combina los bloques antes de la bobina.'); return;
+        }
+        const b1 = stack.pop();
+        current = (op === 'ANB')
+          ? { kind: 'series', children: [b1, current], line: ln }
+          : { kind: 'parallel', children: [b1, current], line: ln };
+        return;
+      }
+
+      if (op === 'OUT'){
+        const a1 = parts[1], a2 = parts[2];
+        if (!a1){ bad('OUT requiere un dispositivo', 'Ejemplos: OUT Y0 · OUT T0 K50 · OUT C0 K10'); return; }
+        const d = Dialect.parseDev(a1);
+        if (!d){
+          bad(`Dispositivo inválido "${a1}"`, 'Usa X, Y, M, T o C con número 0–255. Ejemplo: OUT Y0'); return;
+        }
+        if (d.family === 'T'){
+          const k = (a2 != null) ? Dialect.parseK(a2) : null;
+          if (k === null){ bad('El temporizador requiere su preset K', 'Ejemplo: OUT T0 K50 (50 × 100 ms = 5 s)'); return; }
+          if (parts.length !== 3){ bad('OUT T# lleva exactamente 2 operandos', 'Ejemplo: OUT T0 K50'); return; }
+          coils.push({ kind: 'timer', dev: d.id, preset: k, line: ln });
+        } else if (d.family === 'C'){
+          const k = (a2 != null) ? Dialect.parseK(a2) : null;
+          if (k === null){ bad('El contador requiere su preset K', 'Ejemplo: OUT C0 K10'); return; }
+          if (parts.length !== 3){ bad('OUT C# lleva exactamente 2 operandos', 'Ejemplo: OUT C0 K10'); return; }
+          coils.push({ kind: 'counter', dev: d.id, preset: k, line: ln });
+        } else {
+          if (parts.length !== 2){ bad('OUT solo lleva el dispositivo', 'Ejemplos: OUT Y0 · OUT T0 K50'); return; }
+          coils.push({ kind: 'out', dev: d.id, line: ln });
+        }
+        return;
+      }
+
+      if (op === 'SET' || op === 'RST'){
+        const d = parts[1] ? Dialect.parseDev(parts[1]) : null;
+        if (!d || parts.length !== 2){
+          bad(`${op} requiere un dispositivo (Y, M, T o C)`, 'Ejemplo: SET M0'); return;
+        }
+        if (op === 'SET' && (d.family === 'T' || d.family === 'C')){
+          bad('SET no aplica a timers/contadores', 'Usa RST para reiniciar un T o C.'); return;
+        }
+        coils.push({ kind: (op === 'SET' ? 'set' : 'rst'), dev: d.id, line: ln });
+        return;
+      }
+
+      bad(`Instrucción no reconocida "${op}"`,
+        'Consulta la ayuda (F1). Válidas: LD LDI AND ANI OR ORI ANB ORB OUT SET RST END.');
+    });
+
+    closeRung();
+
+    if (sawInstr && !ended){
+      errors.push({ line: rawLines.length, text: '', cause: 'Falta END al final del programa',
+        hint: 'Añade END como última línea.', severity: 'error' });
+    }
+
+    const seen = {};
+    rungs.forEach(r => r.coils.forEach(c => {
+      if (c.kind === 'out'){
+        (seen[c.dev] = seen[c.dev] || []).push(r.line);
+      }
+    }));
+    Object.keys(seen).forEach(dev => {
+      if (seen[dev].length > 1){
+        warnings.push({
+          line: seen[dev][0], text: dev,
+          cause: `${dev} se escribe (OUT) en ${seen[dev].length} rungs (líneas ${seen[dev].join(', ')})`,
+          hint: 'En el scan, la última bobina evaluada gana. Revisa si es intencional.',
+          severity: 'warning'
+        });
+      }
+    });
+
+    return { rungs, endLine, errors, warnings, empty: !sawInstr };
+  }
+
+  return { parse };
+})();
+/* ===== 03 LADDER (layout) ===== */
+const Ladder = (() => {
+  const CELL_W = 72, CELL_H = 80, GAP = 30, RAIL_L = 46;
+
+  function nodeWidth(n){
+    if (n.kind === 'contact') return 1;
+    if (n.kind === 'series') return n.children.reduce((s,c) => s + nodeWidth(c), 0);
+    return Math.max(...n.children.map(nodeWidth)); // parallel
+  }
+  function nodeHeight(n){
+    if (n.kind === 'contact') return 1;
+    if (n.kind === 'series') return Math.max(...n.children.map(nodeHeight));
+    return n.children.reduce((s,c) => s + nodeHeight(c), 0);
+  }
+
+  function layout(program){
+    const bands = [];
+    let y = GAP;
+    program.rungs.forEach(r => {
+      const exprW = nodeWidth(r.expr), exprH = nodeHeight(r.expr);
+      const hasTC = r.coils.some(c => c.kind === 'timer' || c.kind === 'counter');
+      const hCells = Math.max(exprH, r.coils.length, 1);
+      bands.push({ rung: r, y, hCells, exprW, exprH, hasTC });
+      y += hCells * CELL_H + GAP;
+    });
+    const railR = Math.max(320,
+      ...bands.map(b => RAIL_L + (b.exprW + (b.hasTC ? 2.6 : 1.6)) * CELL_W));
+    return {
+      bands, railR,
+      width: Math.ceil(railR + 30),
+      height: bands.length ? y : GAP + 2 * CELL_H,
+      CELL_W, CELL_H, GAP, RAIL_L
+    };
+  }
+
+  return { layout, nodeWidth, nodeHeight, CELL_W, CELL_H, GAP, RAIL_L };
+})();
+// ==PURE-END==
+
+/* ===== 04 RENDERER ===== */
+const Renderer = (() => {
+  const NS = 'http://www.w3.org/2000/svg';
+  const L = Ladder;
+  let index;    // Map nodo -> {inEls, outEls, symEls}
+  let coilEls;  // Map bobina -> {symEls, wires, valueEl}
+
+  const svgEl = () => document.getElementById('diagram');
+
+  function el(tag, attrs){
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+  function txt(x, y, str, cls, anchor){
+    const t = el('text', { x, y, class: cls || 'dev', 'text-anchor': anchor || 'middle' });
+    t.textContent = str;
+    return t;
+  }
+  function lineEl(x1, y1, x2, y2){
+    return el('line', { x1, y1, x2, y2, class: 'wire' });
+  }
+  function reg(node){
+    let e = index.get(node);
+    if (!e){ e = { inEls: [], outEls: [], symEls: [] }; index.set(node, e); }
+    return e;
+  }
+
+  function clear(){
+    const s = svgEl();
+    while (s.firstChild) s.removeChild(s.firstChild);
+    index = new Map();
+    coilEls = new Map();
+  }
+
+  /* --- dibujo recursivo de un nodo --- */
+  function drawNode(g, node, col, rowTop, ctx){
+    if (node.kind === 'contact'){
+      const x = L.RAIL_L + col * L.CELL_W;
+      const cy = ctx.bandY + (rowTop + 0.5) * L.CELL_H;
+      const e = reg(node);
+      e.inEls.push(lineEl(ctx.startX, cy, x + 16, cy));
+      g.appendChild(e.inEls[e.inEls.length - 1]);
+      const sx1 = x + 22, sx2 = x + 34;
+      const l1 = el('line', { x1: sx1, y1: cy - 14, x2: sx1, y2: cy + 14, class: 'sym' });
+      const l2 = el('line', { x1: sx2, y1: cy - 14, x2: sx2, y2: cy + 14, class: 'sym' });
+      g.appendChild(l1); g.appendChild(l2);
+      e.symEls.push(l1, l2);
+      if (node.pol === 'NC'){
+        const d = el('line', { x1: sx1 - 4, y1: cy + 17, x2: sx2 + 4, y2: cy - 17, class: 'sym' });
+        g.appendChild(d); e.symEls.push(d);
+      }
+      const ow = lineEl(x + 36, cy, x + L.CELL_W, cy);
+      g.appendChild(ow); e.outEls.push(ow);
+      g.appendChild(txt(x + 28, cy + 34, node.dev, 'dev'));
+      return { exitX: x + L.CELL_W, exitRow: rowTop, rows: 1 };
+    }
+
+    if (node.kind === 'series'){
+      let cursorX = ctx.startX, rows = 0, exitRow = rowTop;
+      node.children.forEach(c => {
+        const res = drawNode(g, c, colForX(cursorX), rowTop, { bandY: ctx.bandY, startX: cursorX });
+        cursorX = res.exitX;
+        rows = Math.max(rows, res.rows);
+        exitRow = res.exitRow;
+      });
+      return { exitX: cursorX, exitRow, rows };
+    }
+
+    // parallel
+    const x = L.RAIL_L + col * L.CELL_W;
+    const splitX = x + 8;
+    const e = reg(node);
+    const cyIn = ctx.bandY + (rowTop + 0.5) * L.CELL_H;
+    const inStub = lineEl(ctx.startX, cyIn, splitX, cyIn);
+    g.appendChild(inStub); e.inEls.push(inStub);
+
+    let rowCursor = rowTop;
+    const cys = [], exits = [], branches = [];
+    node.children.forEach(c => {
+      const r = drawNode(g, c, col, rowCursor, { bandY: ctx.bandY, startX: splitX });
+      cys.push(ctx.bandY + (rowCursor + 0.5) * L.CELL_H);
+      exits.push(r.exitX);
+      branches.push({ c, r });
+      rowCursor += r.rows;
+    });
+    e.inEls.push(vline(g, splitX, cys[0], cys[cys.length - 1]));
+
+    // La unión queda EXACTAMENTE donde termina la rama más larga;
+    // las ramas más cortas se extienden con un cable hasta ese punto.
+    const mergeX = Math.max(...exits);
+    branches.forEach(({ c, r }, i) => {
+      if (r.exitX < mergeX - 0.5){
+        const ext = lineEl(r.exitX, cys[i], mergeX, cys[i]);
+        g.appendChild(ext);
+        reg(c).outEls.push(ext); // se resalta con el flujo de esa rama
+      }
+    });
+    e.outEls.push(vline(g, mergeX, cys[0], cys[cys.length - 1]));
+    return { exitX: mergeX, exitRow: rowTop, rows: rowCursor - rowTop };
+  }
+
+  function vline(g, x, y1, y2){
+    const l = el('line', { x1: x, y1, x2: x, y2, class: 'wire' });
+    g.appendChild(l);
+    return l;
+  }
+  function colForX(x){ return Math.round((x - L.RAIL_L) / L.CELL_W); }
+
+  /* --- bobinas del rung --- */
+  function drawCoils(g, band, exprExitX, exitRow){
+    const rung = band.rung, bandY = band.y;
+    const bx = L.RAIL_L + band.exprW * L.CELL_W + 10;
+    const cyRoot = bandY + (exitRow + 0.5) * L.CELL_H;
+    rung.coils.forEach((c, i) => {
+      const cy = bandY + (exitRow + i + 0.5) * L.CELL_H;
+      const e = coilEls.get(c) || { symEls: [], wires: [], valueEl: null };
+      coilEls.set(c, e);
+      const isTC = c.kind === 'timer' || c.kind === 'counter';
+      const endX = isTC ? bx : bx + 2;
+      const d = `M ${exprExitX} ${cyRoot} L ${bx - 8} ${cyRoot}` +
+        (i > 0 ? ` L ${bx - 8} ${cy}` : '') + ` L ${endX} ${cy}`;
+      const p = el('path', { d, class: 'wire' });
+      g.appendChild(p); e.wires.push(p);
+
+      if (isTC){
+        const box = el('rect', { x: bx, y: cy - 26, width: 84, height: 52, rx: 4, class: 'box' });
+        g.appendChild(box); e.symEls.push(box);
+        const t1 = txt(bx + 42, cy - 8, c.dev, 'dev'); g.appendChild(t1); e.symEls.push(t1);
+        const t2 = txt(bx + 42, cy + 7, 'K' + c.preset, 'preset'); g.appendChild(t2); e.symEls.push(t2);
+        const v = txt(bx + 42, cy + 21, '—', 'val'); g.appendChild(v); e.valueEl = v;
+        const out = el('line', { x1: bx + 84, y1: cy, x2: band.railR, y2: cy, class: 'wire' });
+        g.appendChild(out);
+      } else {
+        const a1 = el('path', { d: `M ${bx + 8} ${cy - 15} Q ${bx - 4} ${cy} ${bx + 8} ${cy + 15}`, class: 'sym' });
+        const a2 = el('path', { d: `M ${bx + 16} ${cy - 15} Q ${bx + 28} ${cy} ${bx + 16} ${cy + 15}`, class: 'sym' });
+        g.appendChild(a1); g.appendChild(a2); e.symEls.push(a1, a2);
+        g.appendChild(txt(bx + 38, cy + 5, c.dev, 'dev', 'start'));
+        if (c.kind === 'set' || c.kind === 'rst'){
+          const s = txt(bx + 12, cy + 4, c.kind === 'set' ? 'S' : 'R', 'dev');
+          g.appendChild(s); e.symEls.push(s);
+        }
+        const out = el('line', { x1: bx + 30, y1: cy, x2: band.railR, y2: cy, class: 'wire' });
+        g.appendChild(out);
+      }
+    });
+  }
+
+  /* --- API --- */
+  function render(layout){
+    clear();
+    const s = svgEl();
+    s.setAttribute('width', layout.width);
+    s.setAttribute('height', layout.height);
+    s.setAttribute('viewBox', `0 0 ${layout.width} ${layout.height}`);
+    const rl = el('line', { x1: L.RAIL_L, y1: 12, x2: L.RAIL_L, y2: layout.height - 12, class: 'wire' });
+    const rr = el('line', { x1: layout.railR, y1: 12, x2: layout.railR, y2: layout.height - 12, class: 'wire' });
+    s.appendChild(rl); s.appendChild(rr);
+    layout.bands.forEach((b, bi) => {
+      b.railR = layout.railR;
+      s.appendChild(txt(14, b.y + 18, String(bi), 'rungnum', 'start'));
+      const g = el('g');
+      s.appendChild(g);
+      const root = drawNode(g, b.rung.expr, 0, 0, { bandY: b.y, startX: L.RAIL_L });
+      drawCoils(g, b, root.exitX, root.exitRow);
+    });
+  }
+
+  function placeholder(kind, msg){
+    clear();
+    const s = svgEl();
+    const W = 720, H = 300;
+    s.setAttribute('width', W); s.setAttribute('height', H);
+    s.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const g = el('g');
+    s.appendChild(g);
+    if (kind === 'empty'){
+      g.setAttribute('class', 'ghost');
+      const cy = 90;
+      g.appendChild(el('line', { x1: 46, y1: 40, x2: 46, y2: 140, class: 'wire' }));
+      g.appendChild(el('line', { x1: 460, y1: 40, x2: 460, y2: 140, class: 'wire' }));
+      g.appendChild(el('line', { x1: 46, y1: cy, x2: 62, y2: cy, class: 'wire' }));
+      g.appendChild(el('line', { x1: 68, y1: cy - 14, x2: 68, y2: cy + 14, class: 'sym' }));
+      g.appendChild(el('line', { x1: 80, y1: cy - 14, x2: 80, y2: cy + 14, class: 'sym' }));
+      g.appendChild(el('line', { x1: 82, y1: cy, x2: 300, y2: cy, class: 'wire' }));
+      g.appendChild(el('path', { d: `M 308 ${cy - 15} Q 296 ${cy} 308 ${cy + 15}`, class: 'sym' }));
+      g.appendChild(el('path', { d: `M 316 ${cy - 15} Q 328 ${cy} 316 ${cy + 15}`, class: 'sym' }));
+      g.appendChild(el('line', { x1: 330, y1: cy, x2: 460, y2: cy, class: 'wire' }));
+      g.appendChild(txt(74, cy + 34, 'X0', 'dev'));
+      g.appendChild(txt(312, cy + 34, 'Y0', 'dev'));
+      g.appendChild(txt(46, 210, 'Escribe tu netlist en la consola. Ejemplo:', 'ph', 'start'));
+      g.appendChild(txt(46, 232, 'LD X0 · OR Y0 · ANI X1 · OUT Y0 · END', 'ph', 'start'));
+    } else {
+      g.appendChild(txt(46, 100, '⚠ Corrige los errores para ver el diagrama', 'ph', 'start'));
+      g.appendChild(txt(46, 128, msg || '', 'ph', 'start'));
+    }
+  }
+
+  function applyEnergy(nodeFlow, coilEnergy){
+    index.forEach((e, node) => {
+      const nf = nodeFlow.get(node) || { in: false, out: false };
+      e.inEls.forEach(x => x.classList.toggle('energized', !!nf.in));
+      e.outEls.forEach(x => x.classList.toggle('energized', !!nf.out));
+      e.symEls.forEach(x => x.classList.toggle('energized', !!nf.out));
+    });
+    coilEls.forEach((e, c) => {
+      const on = !!coilEnergy.get(c);
+      e.symEls.forEach(x => x.classList.toggle('energized', on));
+      e.wires.forEach(x => x.classList.toggle('energized', on));
+    });
+  }
+
+  function updateValues(vals){
+    coilEls.forEach((e, c) => {
+      if (e.valueEl && vals.has(c)) e.valueEl.textContent = vals.get(c);
+    });
+  }
+
+  return { render, placeholder, applyEnergy, updateValues };
+})();
+/* ===== 05 SIMULATOR ===== */
+const Simulator = (() => {
+  let program = null, timerId = null, running = false;
+  const st = { X: {}, Y: {}, M: {}, T: {}, C: {} };
+  const tAcc = {}, cCount = {}, prevCoil = new Map();
+
+  const simPanel = document.getElementById('simPanel');
+  const simEmpty = document.getElementById('simEmpty');
+  const btnRun = document.getElementById('btnRun');
+  const btnReset = document.getElementById('btnReset');
+
+  function walk(node, fn){
+    fn(node);
+    if (node.children) node.children.forEach(c => walk(c, fn));
+  }
+  function xDevs(p){
+    const s = new Set();
+    p.rungs.forEach(r => walk(r.expr, n => {
+      if (n.kind === 'contact' && n.dev.charAt(0) === 'X') s.add(n.dev);
+    }));
+    return [...s].sort((a, b) =>
+      (parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10)) || a.localeCompare(b));
+  }
+
+  function buildSwitches(){
+    simPanel.querySelectorAll('label.sw').forEach(n => n.remove());
+    const xs = program ? xDevs(program) : [];
+    simEmpty.hidden = xs.length > 0;
+    const grp = simPanel.querySelector('.grp');
+    xs.forEach(dev => {
+      const label = document.createElement('label');
+      label.className = 'sw';
+      label.title = 'Interruptor de entrada ' + dev;
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!st.X[dev];
+      input.setAttribute('aria-label', 'Entrada ' + dev);
+      input.addEventListener('change', () => {
+        st.X[dev] = input.checked;
+        if (!running) scan(true); // vista previa en pausa (sin avanzar timers/contadores)
+      });
+      const knob = document.createElement('span');
+      knob.className = 'knob';
+      const name = document.createElement('span');
+      name.textContent = dev;
+      label.appendChild(input); label.appendChild(knob); label.appendChild(name);
+      simPanel.insertBefore(label, grp);
+    });
+  }
+
+  function devState(id){
+    const fam = id.charAt(0);
+    return !!st[fam][id];
+  }
+  function passes(node){
+    const s = devState(node.dev);
+    return node.pol === 'NO' ? s : !s;
+  }
+
+  function evalNode(node, energyIn, nf){
+    if (node.kind === 'contact'){
+      const p = passes(node);
+      nf.set(node, { in: energyIn, out: energyIn && p });
+      return energyIn && p;
+    }
+    if (node.kind === 'series'){
+      let e = energyIn;
+      node.children.forEach(c => { e = evalNode(c, e, nf); });
+      nf.set(node, { in: energyIn, out: e });
+      return e;
+    }
+    let any = false;
+    node.children.forEach(c => { const f = evalNode(c, energyIn, nf); any = any || f; });
+    nf.set(node, { in: energyIn, out: any });
+    return any;
+  }
+
+  function applyCoil(c, flow, dry){
+    const fam = c.dev.charAt(0);
+    if (c.kind === 'out'){
+      st[fam][c.dev] = flow;
+    } else if (c.kind === 'set'){
+      if (flow) st[fam][c.dev] = true;
+    } else if (c.kind === 'rst'){
+      if (flow){
+        st[fam][c.dev] = false;
+        if (fam === 'T') tAcc[c.dev] = 0;
+        if (fam === 'C'){ cCount[c.dev] = 0; }
+      }
+    } else if (c.kind === 'timer'){
+      if (flow){
+        if (!dry) tAcc[c.dev] = (tAcc[c.dev] || 0) + 100;
+        st.T[c.dev] = (tAcc[c.dev] || 0) >= c.preset * 100;
+      } else {
+        tAcc[c.dev] = 0;
+        st.T[c.dev] = false;
+      }
+    } else if (c.kind === 'counter'){
+      if (!dry){
+        const prev = prevCoil.get(c) || false;
+        if (flow && !prev) cCount[c.dev] = (cCount[c.dev] || 0) + 1;
+        prevCoil.set(c, flow);
+      }
+      st.C[c.dev] = (cCount[c.dev] || 0) >= c.preset;
+    }
+  }
+
+  function values(){
+    const m = new Map();
+    program && program.rungs.forEach(r => r.coils.forEach(c => {
+      if (c.kind === 'timer') m.set(c, ((tAcc[c.dev] || 0) / 1000).toFixed(1) + 's');
+      if (c.kind === 'counter') m.set(c, (cCount[c.dev] || 0) + '/' + c.preset);
+    }));
+    return m;
+  }
+
+  function scan(dry){
+    if (!program) return;
+    const nf = new Map(), ce = new Map();
+    program.rungs.forEach(r => {
+      const flow = evalNode(r.expr, true, nf);
+      r.coils.forEach(c => {
+        ce.set(c, flow);
+        applyCoil(c, flow, dry);
+      });
+    });
+    Renderer.applyEnergy(nf, ce);
+    Renderer.updateValues(values());
+  }
+
+  function tick(){ scan(false); }
+
+  function start(){
+    if (running) return;
+    running = true;
+    timerId = setInterval(tick, 100);
+    updateRunUI();
+    tick();
+  }
+  function pause(){
+    if (!running) return;
+    running = false;
+    clearInterval(timerId); timerId = null;
+    updateRunUI();
+    scan(true);
+  }
+  function reset(){
+    st.Y = {}; st.M = {}; st.T = {}; st.C = {};
+    Object.keys(tAcc).forEach(k => delete tAcc[k]);
+    Object.keys(cCount).forEach(k => delete cCount[k]);
+    prevCoil.clear();
+    scan(true);
+  }
+  function toggleRun(){ running ? pause() : start(); }
+  function updateRunUI(){
+    btnRun.textContent = running ? '⏸ PAUSE' : '▶ RUN';
+    btnRun.classList.toggle('active', running);
+  }
+
+  function setProgram(p){
+    program = p;
+    buildSwitches();
+    if (running) tick(); else scan(true);
+  }
+
+  btnRun.addEventListener('click', toggleRun);
+  btnReset.addEventListener('click', reset);
+
+  return { setProgram, reset, toggleRun, isRunning: () => running };
+})();
+/* ===== 06 STORAGE ===== */
+const Storage = (() => {
+  const SCHEMA = 'ladderhand-project/v1';
+  const KEY = 'ladderhand.autosave';
+  const PROJ = 'ladderhand.projects';
+  const FS_TYPES_SAVE = [{ description: 'Proyecto LadderHand', accept: { 'application/json': ['.json'] } }];
+  let handle = null;
+  let quotaWarned = false;
+
+  const fsSupported = () => typeof window !== 'undefined' && 'showSaveFilePicker' in window;
+
+  /* --- IndexedDB best-effort (historial; silencioso en file://) --- */
+  let idb = null;
+  (function initIdb(){
+    try {
+      const rq = indexedDB.open('ladderhand', 1);
+      rq.onupgradeneeded = () => { rq.result.createObjectStore('history', { autoIncrement: true }); };
+      rq.onsuccess = () => { idb = rq.result; };
+      rq.onerror = () => { idb = null; };
+      rq.onblocked = () => { idb = null; };
+    } catch (e) { idb = null; }
+  })();
+  function idbPush(project){
+    if (!idb) return;
+    try {
+      const tx = idb.transaction('history', 'readwrite');
+      tx.objectStore('history').put({ at: Date.now(), name: project.name, code: project.code });
+      const delTx = idb.transaction('history', 'readwrite');
+      const delOs = delTx.objectStore('history');
+      let n = 0;
+      delOs.openCursor(null, 'prev').onsuccess = (ev) => {
+        const cur = ev.target.result;
+        if (!cur) return;
+        n++;
+        if (n > 5) cur.delete();
+        cur.continue();
+      };
+    } catch (e) { /* silencioso */ }
+  }
+
+  function slug(name){
+    return String(name || 'proyecto').toLowerCase().normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'proyecto';
+  }
+
+  function projectFromText(text){
+    try {
+      const p = JSON.parse(text);
+      if (p.schema !== SCHEMA){ UI.toast('Archivo no válido: schema desconocido (' + (p.schema || 'sin schema') + ')', 'err'); return null; }
+      if (typeof p.code !== 'string'){ UI.toast('Archivo no válido: falta el campo "code".', 'err'); return null; }
+      return p;
+    } catch (e) {
+      UI.toast('El archivo no es JSON válido.', 'err');
+      return null;
+    }
+  }
+
+  async function writeHandle(project){
+    const w = await handle.createWritable();
+    await w.write(JSON.stringify(project, null, 2));
+    await w.close();
+    idbPush(project);
+  }
+
+  async function saveAs(project){
+    if (!fsSupported()){ download(project); return true; }
+    try {
+      handle = await window.showSaveFilePicker({
+        suggestedName: slug(project.name) + '.json',
+        types: FS_TYPES_SAVE
+      });
+      await writeHandle(project);
+      return true;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return 'cancel';
+      download(project);
+      return true;
+    }
+  }
+
+  async function save(project){
+    try {
+      if (handle){ await writeHandle(project); return true; }
+      return await saveAs(project);
+    } catch (err) {
+      UI.toast('No se pudo guardar: ' + (err && err.message ? err.message : err), 'err');
+      return false;
+    }
+  }
+
+  function download(project){
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = slug(project.name) + '.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    UI.toast('Tu navegador no soporta guardar directo: se descargó el archivo .json', 'ok');
+  }
+
+  async function openViaInput(){
+    return new Promise(resolve => {
+      const input = document.createElement('input');
+      input.type = 'file'; input.accept = '.json,application/json';
+      input.addEventListener('change', async () => {
+        const f = input.files && input.files[0];
+        if (!f){ resolve('cancel'); return; }
+        resolve(projectFromText(await f.text()));
+      });
+      input.click();
+    });
+  }
+
+  async function open(){
+    if (!fsSupported()) return openViaInput();
+    try {
+      const [h] = await window.showOpenFilePicker({ types: FS_TYPES_SAVE, multiple: false });
+      const f = await h.getFile();
+      const p = projectFromText(await f.text());
+      if (p) handle = h;
+      return p;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return 'cancel';
+      return openViaInput();
+    }
+  }
+
+  function autosave(project){
+    try {
+      localStorage.setItem(KEY, JSON.stringify(project));
+      quotaWarned = false;
+    } catch (e) {
+      if (!quotaWarned){
+        quotaWarned = true;
+        UI.toast('Almacenamiento del navegador lleno: usa "Guardar" para conservar en disco.', 'err');
+      }
+    }
+  }
+  function readAutosave(){
+    try {
+      const t = localStorage.getItem(KEY);
+      return t ? JSON.parse(t) : null;
+    } catch (e) { return null; }
+  }
+  function clearAutosave(){
+    try { localStorage.removeItem(KEY); } catch (e) { /* noop */ }
+  }
+
+  /* --- biblioteca de proyectos del usuario --- */
+  function listProjects(){
+    try { return JSON.parse(localStorage.getItem(PROJ) || '[]'); } catch (e) { return []; }
+  }
+  function saveProjects(list){
+    try { localStorage.setItem(PROJ, JSON.stringify(list)); return true; }
+    catch (e) { UI.toast('No se pudo guardar en la biblioteca (almacenamiento lleno).', 'err'); return false; }
+  }
+  function addProject(name, code){
+    const list = listProjects();
+    const item = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name, code, modifiedAt: new Date().toISOString() };
+    list.unshift(item);
+    return saveProjects(list) ? item : null;
+  }
+  function updateProject(id, patch){
+    const list = listProjects();
+    const it = list.find(p => p.id === id);
+    if (!it) return false;
+    Object.assign(it, patch, { modifiedAt: new Date().toISOString() });
+    return saveProjects(list);
+  }
+  function removeProject(id){
+    const list = listProjects().filter(p => p.id !== id);
+    return saveProjects(list);
+  }
+
+  return { SCHEMA, fsSupported, save, saveAs, open, download, autosave, readAutosave, clearAutosave,
+           listProjects, addProject, updateProject, removeProject, slug };
+})();
+
+/* ===== 07 LIBRARY + EJEMPLOS ===== */
+const EXAMPLES = [
+  { name: '01 · Motor arranque-paro (enclavamiento)',
+    code: '; Arranque-paro con enclavamiento\n; X0=arranque  X1=paro  Y0=motor\nLD X0\nOR Y0\nANI X1\nOUT Y0\nEND' },
+  { name: '02 · Motor con inversión de giro (interbloqueo)',
+    code: '; Inversion de giro con interbloqueo cruzado\n; X0=derecha  X1=izquierda  X2=paro\nLD X0\nANI X2\nANI Y1\nOUT Y0\nLD X1\nANI X2\nANI Y0\nOUT Y1\nEND' },
+  { name: '03 · Semáforo 2 tiempos (2 timers)',
+    code: '; Semaforo de dos tiempos con T0 y T1 (3 s cada fase)\n; X0=marcha\nLD X0\nOUT M0\nLD M0\nANI T1\nOUT Y0\nOUT T0 K30\nLD T0\nOUT Y1\nOUT T1 K30\nEND' },
+  { name: '04 · Contador de piezas (alarma a K10)',
+    code: '; Contador de piezas\n; X0=sensor (flanco)  X1=reset  Y0=alarma al llegar a 10\nLD X1\nRST C0\nLD X0\nOUT C0 K10\nLD C0\nOUT Y0\nEND' },
+  { name: '05 · Bomba con retardo al soltar (off-delay)',
+    code: '; La bomba sigue 5 s tras soltar X0 (off-delay con TON)\nLD X0\nOR Y0\nANI T0\nOUT Y0\nLDI X0\nAND Y0\nOUT T0 K50\nEND' }
+];
+
+const Library = (() => {
+  const libExamples = document.getElementById('libExamples');
+  const libProjects = document.getElementById('libProjects');
+
+  function itemRow(title, meta, actions){
+    const div = document.createElement('div');
+    div.className = 'lib-item';
+    const left = document.createElement('div');
+    const t = document.createElement('div'); t.className = 'lname'; t.textContent = title;
+    left.appendChild(t);
+    if (meta){ const m = document.createElement('div'); m.className = 'lmeta'; m.textContent = meta; left.appendChild(m); }
+    const right = document.createElement('div');
+    right.className = 'lactions';
+    actions.forEach(([label, fn, primary]) => {
+      const b = document.createElement('button');
+      b.className = 'btn' + (primary ? ' active' : '');
+      b.textContent = label;
+      b.addEventListener('click', fn);
+      right.appendChild(b);
+    });
+    div.appendChild(left); div.appendChild(right);
+    return div;
+  }
+
+  function render(){
+    libExamples.innerHTML = '';
+    EXAMPLES.forEach(ex => {
+      libExamples.appendChild(itemRow(ex.name, 'Ejemplo integrado (solo lectura)', [
+        ['Abrir', () => { App.loadProject({ name: ex.name, code: ex.code }); UI.closeAllModals(); }, true]
+      ]));
+    });
+    libProjects.innerHTML = '';
+    const list = Storage.listProjects();
+    if (list.length === 0){
+      const empty = document.createElement('div');
+      empty.style.cssText = 'font:12px var(--sans);color:var(--muted);padding:4px 2px 8px';
+      empty.textContent = 'Aún no hay proyectos guardados. Usa "Guardar" o crea uno nuevo.';
+      libProjects.appendChild(empty);
+    }
+    list.forEach(p => {
+      const meta = 'Modificado: ' + new Date(p.modifiedAt).toLocaleString();
+      libProjects.appendChild(itemRow(p.name, meta, [
+        ['Abrir', () => { App.loadProject({ name: p.name, code: p.code, createdAt: p.createdAt }); UI.closeAllModals(); }, true],
+        ['Renombrar', () => {
+          const n = prompt('Nuevo nombre del proyecto:', p.name);
+          if (n && n.trim()){ Storage.updateProject(p.id, { name: n.trim() }); render(); }
+        }],
+        ['Duplicar', () => { Storage.addProject(p.name + ' (copia)', p.code); render(); }],
+        ['Eliminar', () => { if (confirm('¿Eliminar "' + p.name + '" de la biblioteca?')){ Storage.removeProject(p.id); render(); } }]
+      ]));
+    });
+  }
+
+  return { render };
+})();
+/* ===== 08 EXPORTER ===== */
+const Exporter = (() => {
+  const NS = 'http://www.w3.org/2000/svg';
+
+  function svgString(){
+    const s = document.getElementById('diagram');
+    const clone = s.cloneNode(true);
+    clone.setAttribute('xmlns', NS);
+    return new XMLSerializer().serializeToString(clone);
+  }
+  function downloadBlob(blob, name){
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+  function exportSVG(){
+    downloadBlob(new Blob([svgString()], { type: 'image/svg+xml;charset=utf-8' }),
+      Storage.slug(App.name()) + '.svg');
+    UI.toast('Diagrama exportado como SVG.', 'ok');
+  }
+  function exportPNG(){
+    const s = document.getElementById('diagram');
+    const w = parseFloat(s.getAttribute('width')) || s.clientWidth || 800;
+    const h = parseFloat(s.getAttribute('height')) || s.clientHeight || 400;
+    const url = URL.createObjectURL(new Blob([svgString()], { type: 'image/svg+xml;charset=utf-8' }));
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = Math.round(w * 2); c.height = Math.round(h * 2);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => {
+        if (b){ downloadBlob(b, Storage.slug(App.name()) + '.png'); UI.toast('Diagrama exportado como PNG (2x).', 'ok'); }
+        else UI.toast('No se pudo generar el PNG.', 'err');
+      }, 'image/png');
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); UI.toast('No se pudo generar el PNG.', 'err'); };
+    img.src = url;
+  }
+  function exportPDF(){ window.print(); }
+  return { exportSVG, exportPNG, exportPDF };
+})();
+
+/* ===== 09 UI (chrome: gutter, errores, toasts, modales, menú, divider, atajos) ===== */
+const UI = (() => {
+  const ta = document.getElementById('console');
+  const gutter = document.getElementById('gutter');
+  const gutterInner = document.getElementById('gutterInner');
+  const errorList = document.getElementById('errorList');
+  const errorHeader = document.getElementById('errorHeader');
+  const badgeErrors = document.getElementById('badgeErrors');
+  const badgeWarnings = document.getElementById('badgeWarnings');
+  const errChevron = document.getElementById('errChevron');
+  const stRungs = document.getElementById('stRungs');
+  const stErrors = document.getElementById('stErrors');
+  const stAutosave = document.getElementById('stAutosave');
+  const stDirty = document.getElementById('stDirty');
+  const toasts = document.getElementById('toasts');
+  const exportMenu = document.getElementById('exportMenu');
+  const btnExport = document.getElementById('btnExport');
+
+  function toast(msg, type){
+    const d = document.createElement('div');
+    d.className = 'toast' + (type === 'err' ? ' err' : type === 'ok' ? ' ok' : '');
+    d.textContent = msg;
+    toasts.appendChild(d);
+    setTimeout(() => d.remove(), 4000);
+  }
+
+  function syncGutter(){ gutter.scrollTop = ta.scrollTop; }
+
+  function updateGutter(code, errors, warnings){
+    const lines = code.split('\n');
+    const errLines = new Set(errors.map(e => e.line));
+    const warnLines = new Set(warnings.map(w => w.line));
+    let html = '';
+    for (let i = 1; i <= lines.length; i++){
+      let cls = 'ln';
+      if (errLines.has(i)) cls += ' err';
+      else if (warnLines.has(i)) cls += ' warn';
+      html += '<div class="' + cls + '">' + i + '</div>';
+    }
+    gutterInner.innerHTML = html;
+    syncGutter();
+  }
+
+  function gotoLine(ln){
+    const lines = ta.value.split('\n');
+    let start = 0;
+    for (let i = 0; i < ln - 1 && i < lines.length; i++) start += lines[i].length + 1;
+    const end = start + (lines[ln - 1] || '').length;
+    ta.focus();
+    ta.setSelectionRange(start, end);
+    ta.scrollTop = Math.max(0, (ln - 1) * 20 - ta.clientHeight / 3);
+    syncGutter();
+  }
+
+  function showErrors(parsed){
+    updateGutter(ta.value, parsed.errors, parsed.warnings);
+    badgeErrors.hidden = parsed.errors.length === 0;
+    if (parsed.errors.length){
+      badgeErrors.textContent = parsed.errors.length + ' error' + (parsed.errors.length > 1 ? 'es' : '');
+    }
+    badgeWarnings.hidden = parsed.warnings.length === 0;
+    if (parsed.warnings.length){
+      badgeWarnings.textContent = parsed.warnings.length + ' aviso' + (parsed.warnings.length > 1 ? 's' : '');
+    }
+    errorList.innerHTML = '';
+    const items = [
+      ...parsed.errors.map(e => ({ ...e, _c: 'err' })),
+      ...parsed.warnings.map(w => ({ ...w, _c: 'warn' }))
+    ].sort((a, b) => a.line - b.line);
+    if (items.length === 0){
+      const ok = document.createElement('div');
+      ok.className = 'err-item';
+      ok.style.color = 'var(--ok)';
+      ok.textContent = '✓ Sin errores de sintaxis.';
+      errorList.appendChild(ok);
+      return;
+    }
+    items.forEach(it => {
+      const d = document.createElement('div');
+      d.className = 'err-item' + (it._c === 'warn' ? ' warn' : '');
+      const eno = document.createElement('span'); eno.className = 'eno'; eno.textContent = 'Línea ' + it.line;
+      const tx = document.createElement('span'); tx.className = 'etext'; tx.textContent = it.text || '';
+      const cause = document.createElement('span'); cause.className = 'ecause'; cause.textContent = it.cause;
+      const hint = document.createElement('div'); hint.className = 'ehint'; hint.textContent = 'Sugerencia: ' + it.hint;
+      d.appendChild(eno); d.appendChild(tx); d.appendChild(cause); d.appendChild(hint);
+      d.addEventListener('click', () => gotoLine(it.line));
+      errorList.appendChild(d);
+    });
+  }
+
+  function updateStatus(parsed){
+    const lines = ta.value.split('\n').length;
+    stRungs.textContent = parsed.rungs.length + ' rungs · ' + lines + ' líneas';
+    const nE = parsed.errors.length, nW = parsed.warnings.length;
+    stErrors.textContent = nE ? (nE + ' errore' + (nE > 1 ? 's' : '') + (nW ? ', ' + nW + ' aviso' + (nW > 1 ? 's' : '') : ''))
+      : (nW ? nW + ' aviso' + (nW > 1 ? 's' : '') : '✓ sin errores');
+    stErrors.style.color = nE ? 'var(--error)' : nW ? 'var(--warn)' : 'var(--ok)';
+    document.getElementById('diagramMeta').textContent = parsed.rungs.length + ' rungs';
+  }
+
+  function setAutosave(d){
+    const p = n => String(n).padStart(2, '0');
+    stAutosave.textContent = 'autoguardado ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+  function setDirty(dirty){
+    stDirty.classList.toggle('clean', !dirty);
+    document.getElementById('stDirtyText').textContent = dirty ? 'cambios sin guardar' : 'guardado';
+  }
+
+  /* --- modales --- */
+  function openModal(id){ document.getElementById(id).hidden = false; }
+  function closeAllModals(){
+    document.querySelectorAll('.overlay').forEach(o => o.hidden = true);
+    exportMenu.hidden = true;
+  }
+  function toggleExportMenu(){ exportMenu.hidden = !exportMenu.hidden; }
+
+  /* --- chrome events --- */
+  errorHeader.addEventListener('click', () => {
+    const open = errorList.hidden;
+    errorList.hidden = !open;
+    errChevron.textContent = open ? '▾' : '▸';
+  });
+  document.querySelectorAll('[data-close]').forEach(b =>
+    b.addEventListener('click', () => { document.getElementById(b.dataset.close).hidden = true; }));
+  document.querySelectorAll('.overlay').forEach(o =>
+    o.addEventListener('mousedown', e => { if (e.target === o) o.hidden = true; }));
+  btnExport.addEventListener('click', e => { e.stopPropagation(); toggleExportMenu(); });
+  document.addEventListener('click', e => {
+    if (!exportMenu.hidden && !exportMenu.contains(e.target) && e.target !== btnExport) exportMenu.hidden = true;
+  });
+
+  /* --- divider --- */
+  const divider = document.getElementById('divider');
+  const main = document.getElementById('main');
+  const consolePane = document.getElementById('consolePane');
+  let dragging = false;
+  divider.addEventListener('mousedown', e => {
+    dragging = true;
+    document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const rect = main.getBoundingClientRect();
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    consolePane.style.flexBasis = Math.min(70, Math.max(18, pct)) + '%';
+  });
+  window.addEventListener('mouseup', () => {
+    if (dragging){ dragging = false; document.body.style.cursor = ''; }
+  });
+
+  /* --- atajos de teclado --- */
+  document.addEventListener('keydown', e => {
+    if (e.key === 'F5'){ e.preventDefault(); Simulator.toggleRun(); }
+    else if (e.key === 'F1'){ e.preventDefault(); openModal('modalHelp'); }
+    else if (e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')){ e.preventDefault(); App.save(); }
+    else if (e.ctrlKey && !e.shiftKey && (e.key === 'l' || e.key === 'L')){ e.preventDefault(); Library.render(); openModal('modalLibrary'); }
+    else if (e.key === 'Escape'){ closeAllModals(); }
+  });
+
+  /* --- contenido de ayuda --- */
+  (function fillHelp(){
+    const rows = [
+      ['LD d / LDI d', 'Inicia un rung con contacto NO (LD) o NC (LDI).', 'LD X0'],
+      ['AND d / ANI d', 'Contacto NO / NC en serie.', 'AND X1'],
+      ['OR d / ORI d', 'Contacto NO / NC en paralelo.', 'OR Y0'],
+      ['ANB / ORB', 'Serie / paralelo entre los dos últimos bloques (cada LD abre un bloque).', 'LD X0 · LD X1 · ORB'],
+      ['OUT d', 'Bobina normal (Y o M).', 'OUT Y0'],
+      ['SET d / RST d', 'Enclava / libera (Y, M) · resetea timers y contadores.', 'SET M0 · RST C0'],
+      ['OUT T# K#', 'Temporizador TON de 100 ms, no retentivo. K50 = 5 s.', 'OUT T0 K50'],
+      ['OUT C# K#', 'Contador ascendente por flanco de subida.', 'OUT C0 K10'],
+      ['END', 'Fin del programa (obligatorio, uno solo).', 'END'],
+      ['; texto', 'Comentario hasta fin de línea.', '; bomba 1']
+    ];
+    let html = '<table class="help-tbl"><tr><th>Instrucción</th><th>Qué hace / qué dibuja</th><th>Ejemplo</th></tr>';
+    rows.forEach(r => { html += '<tr><td><code>' + r[0] + '</code></td><td>' + r[1] + '</td><td><code>' + r[2] + '</code></td></tr>'; });
+    html += '</table>';
+    html += '<p class="help-note"><b>Dispositivos:</b> X (entradas, con interruptor en simulación), Y (salidas), M (relés internos), T (timers), C (contadores), numerados 0–255. ' +
+      'Constantes K 0–9999. <b>Nota didáctica:</b> aquí la numeración es decimal; GX Works usa octal para X/Y.</p>';
+    html += '<p class="help-note"><b>Atajos:</b> <kbd>Ctrl</kbd>+<kbd>S</kbd> guardar · <kbd>Ctrl</kbd>+<kbd>L</kbd> biblioteca · <kbd>F5</kbd> RUN/PAUSE · <kbd>F1</kbd> ayuda · <kbd>Esc</kbd> cerrar.</p>';
+    html += '<p class="help-note"><b>Filosofía v1:</b> se escribe para dibujar. Con la simulación en PAUSA puedes accionar los interruptores y ver un avance de la lógica (los timers/contadores no avanzan).</p>';
+    document.getElementById('helpBody').innerHTML = html;
+  })();
+
+  return { toast, showErrors, updateStatus, setAutosave, setDirty, syncGutter, gotoLine, openModal, closeAllModals };
+})();
+
+/* ===== 10 APP ===== */
+const App = (() => {
+  const SCHEMA = Storage.SCHEMA;
+  const state = { name: 'Sin título', code: '', createdAt: new Date().toISOString(), dirty: false, parsed: null };
+  let renderTimer = null, saveTimer = null, bigWarned = false;
+
+  const ta = document.getElementById('console');
+  const nameInput = document.getElementById('projectName');
+  const banner = document.getElementById('recoverBanner');
+
+  function projectObj(){
+    return {
+      schema: SCHEMA, name: state.name, createdAt: state.createdAt,
+      modifiedAt: new Date().toISOString(), code: state.code, settings: { scanMs: 100 }
+    };
+  }
+  function markDirty(){ state.dirty = true; UI.setDirty(true); }
+  function markClean(){ state.dirty = false; UI.setDirty(false); }
+
+  function setName(n, dirty = true){
+    state.name = (n || '').trim() || 'Sin título';
+    nameInput.value = state.name;
+    if (dirty) markDirty();
+  }
+  function onCodeChanged(){
+    state.code = ta.value;
+    markDirty();
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(renderNow, 60);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      Storage.autosave(projectObj());
+      UI.setAutosave(new Date());
+    }, 800);
+  }
+
+  function renderNow(){
+    const parsed = Parser.parse(state.code);
+    state.parsed = parsed;
+    if (parsed.empty || (parsed.rungs.length === 0 && parsed.errors.length === 0)){
+      Renderer.placeholder('empty');
+    } else if (parsed.rungs.length === 0){
+      Renderer.placeholder('error', parsed.errors.length + ' problema(s) por resolver — mira el panel de diagnóstico.');
+    } else {
+      Renderer.render(Ladder.layout(parsed));
+      if (parsed.rungs.length > 100 && !bigWarned){
+        bigWarned = true;
+        UI.toast('Programa grande (' + parsed.rungs.length + ' rungs): puede notarse lentitud.', 'err');
+      } else if (parsed.rungs.length <= 100){
+        bigWarned = false;
+      }
+    }
+    Simulator.setProgram(parsed);
+    UI.showErrors(parsed);
+    UI.updateStatus(parsed);
+  }
+
+  function loadProject(p){
+    setName(p.name || 'Sin título', false);
+    state.createdAt = p.createdAt || new Date().toISOString();
+    ta.value = p.code || 'END';
+    state.code = ta.value;
+    markClean();
+    renderNow();
+  }
+
+  async function save(){
+    const r = await Storage.save(projectObj());
+    if (r === 'cancel') return;
+    if (r){ markClean(); UI.toast('Proyecto guardado.', 'ok'); }
+  }
+  async function open(){
+    const p = await Storage.open();
+    if (p === 'cancel' || !p) return;
+    loadProject({ name: p.name, code: p.code, createdAt: p.createdAt });
+    UI.toast('Proyecto abierto: ' + p.name, 'ok');
+  }
+  function newProject(){
+    if (state.dirty && !confirm('Hay cambios sin guardar. ¿Descartarlos?')) return;
+    loadProject({ name: 'Sin título', code: 'END' });
+    UI.toast('Nuevo proyecto creado.', 'ok');
+  }
+  function name(){ return state.name; }
+
+  function init(){
+    ta.addEventListener('input', onCodeChanged);
+    ta.addEventListener('scroll', () => UI.syncGutter());
+    nameInput.addEventListener('change', () => setName(nameInput.value));
+
+    document.getElementById('btnNew').addEventListener('click', newProject);
+    document.getElementById('btnSave').addEventListener('click', save);
+    document.getElementById('btnOpen').addEventListener('click', open);
+    document.getElementById('btnLibrary').addEventListener('click', () => {
+      Library.render();
+      UI.openModal('modalLibrary');
+    });
+    document.getElementById('btnHelp').addEventListener('click', () => UI.openModal('modalHelp'));
+    document.querySelectorAll('#exportMenu button').forEach(b => {
+      b.addEventListener('click', () => {
+        const kind = b.dataset.export;
+        if (kind === 'svg') Exporter.exportSVG();
+        else if (kind === 'png') Exporter.exportPNG();
+        else Exporter.exportPDF();
+      });
+    });
+
+    const last = Storage.readAutosave();
+    if (last && typeof last.code === 'string' && last.code !== EXAMPLES[0].code){
+      loadProject({ name: last.name, code: last.code });
+      banner.hidden = false;
+    } else {
+      loadProject({ name: EXAMPLES[0].name, code: EXAMPLES[0].code });
+    }
+    document.getElementById('btnRecover').addEventListener('click', () => {
+      banner.hidden = true;
+      UI.toast('Sesión recuperada del autoguardado.', 'ok');
+    });
+    document.getElementById('btnDiscard').addEventListener('click', () => {
+      Storage.clearAutosave();
+      banner.hidden = true;
+    });
+
+    window.addEventListener('beforeunload', e => {
+      if (state.dirty){
+        Storage.autosave(projectObj());
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    UI.setAutosave(new Date());
+  }
+
+  return { loadProject, newProject, save, open, name, init };
+})();
+
+App.init();
+</script>
+</body>
+</html>
