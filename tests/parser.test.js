@@ -76,16 +76,116 @@ const a3 = Parser.parse('LD X0\nLD X1\nORB\nLD X2\nANB\nOUT Y0\nEND');
 check('ANB tras ORB: serie(paralelo, X2)',
   a3.errors.length === 0 && a3.rungs[0].expr.kind === 'series' && a3.rungs[0].expr.children[0].kind === 'parallel');
 const a4 = Parser.parse('LD X0\nLD X1\nOUT Y0\nEND');
-check('LD doble sin combinar → ANB implícito en serie con warning',
+check('LD doble sin combinar → rama abierta (al aire) con warning',
   a4.errors.length === 0 && a4.warnings.length === 1 &&
-  a4.rungs.length === 1 && a4.rungs[0].expr.kind === 'series');
+  a4.rungs.length === 1 &&
+  a4.rungs[0].expr.kind === 'contact' && a4.rungs[0].expr.dev === 'X1' &&
+  a4.rungs[0].open.length === 1 && a4.rungs[0].open[0].dev === 'X0');
+check('LD doble: layout dibuja 1 banda con 1 rama abierta',
+  Ladder.layout(a4).bands.length === 1 && Ladder.layout(a4).bands[0].openH === 1);
 const a5 = Parser.parse('LD X0\nOUT Y0\nOUT T0 K50\nEND');
 check('multi-bobina (OUT Y0 + OUT T0): 1 rung, 2 bobinas',
   a5.errors.length === 0 && a5.rungs.length === 1 && a5.rungs[0].coils.length === 2);
 
-console.log('— Caso real de usuario: dos grupos ORB en cadena (ANB implícito) —');
-const u1 = Parser.parse('LD X0\nAND X1\nLDI X2\nAND X3\nORB\nANI X4\nLD X5\nLD X6\nAND X7\nORB\nOUT Y0\nEND');
-check('netlist del usuario: sin errores (solo 1 warning)', u1.errors.length === 0 && u1.warnings.length === 1,
+console.log('— MPS/MRD/MPP (bifurcación de salidas divergentes) —');
+const m1 = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y1\nMRD\nAND X2\nOUT Y2\nMRD\nAND X3\nOUT Y3\nMPP\nEND');
+check('MPS/MRD/MPP: sin errores, 1 rung', m1.errors.length === 0 && m1.rungs.length === 1, JSON.stringify(m1.errors));
+check('MPS: expr es fork con 3 ramas', m1.rungs[0].expr.kind === 'fork' && m1.rungs[0].expr.arms.length === 3);
+check('MPS: base = contacto X0', m1.rungs[0].expr.base.kind === 'contact' && m1.rungs[0].expr.base.dev === 'X0');
+check('MPS: cada rama lleva su bobina (Y1|Y2|Y3)',
+  m1.rungs[0].expr.arms.map(a => a.coils.map(c => c.dev).join()).join('|') === 'Y1|Y2|Y3');
+check('MPS: rama = serie(identidad, X1)',
+  m1.rungs[0].expr.arms[0].node.kind === 'series' &&
+  m1.rungs[0].expr.arms[0].node.children[0].kind === 'identity' &&
+  m1.rungs[0].expr.arms[0].node.children[1].dev === 'X1');
+check('MPS: las ramas no repiten el contacto base X0', !JSON.stringify(m1.rungs[0].expr.arms).includes('X0'));
+const lm = Ladder.layout(m1);
+check('MPS: layout 1 banda de 3 filas y 2 celdas de ancho',
+  lm.bands.length === 1 && lm.bands[0].hCells === 3 && lm.bands[0].exprW === 2);
+const m2 = Parser.parse('LD X0\nMPS\nOR X1\nOUT Y1\nMRD\nAND X2\nOUT Y2\nMPP\nEND');
+check('MPS: rama con OR = parallel(identidad, X1)',
+  m2.errors.length === 0 && m2.rungs[0].expr.arms[0].node.kind === 'parallel' &&
+  m2.rungs[0].expr.arms[0].node.children[0].kind === 'identity');
+const m3 = Parser.parse('LD X0\nOR X1\nMPS\nAND X2\nOUT Y0\nOUT T0 K50\nMRD\nAND X3\nOUT Y1\nMPP\nEND');
+check('MPS: base compuesta (par) y rama con 2 bobinas',
+  m3.errors.length === 0 && m3.rungs[0].expr.base.kind === 'parallel' &&
+  m3.rungs[0].expr.arms[0].coils.length === 2 && m3.rungs[0].expr.arms[0].coils[1].kind === 'timer');
+check('MRD sin MPS → error', Parser.parse('LD X0\nMRD\nOUT Y0\nEND').errors.some(e => /MPS previo/.test(e.cause)));
+check('MPP sin MPS → error', Parser.parse('LD X0\nMPP\nOUT Y0\nEND').errors.some(e => /MPS previo/.test(e.cause)));
+check('MPS sin MPP → warning (no error)',
+  (() => { const r = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y1\nEND');
+    return r.errors.length === 0 && r.warnings.some(w => /MPP/.test(w.cause)) && r.rungs.length === 1; })());
+check('rama MPS sin bobina → error',
+  Parser.parse('LD X0\nMPS\nAND X1\nMRD\nAND X2\nOUT Y2\nMPP\nEND').errors.some(e => /rama MPS anterior no tiene bobina/.test(e.cause)));
+check('LD dentro de MPS → error',
+  Parser.parse('LD X0\nMPS\nAND X1\nOUT Y1\nLD X2\nOUT Y2\nEND').errors.some(e => /no se usa dentro/.test(e.cause)));
+check('MPS tras bobina → error',
+  Parser.parse('LD X0\nOUT Y0\nMPS\nAND X1\nOUT Y1\nMPP\nEND').errors.some(e => /antes de la primera bobina/.test(e.cause)));
+check('OUT tras MPP: rama hermana sobre la base (no error)',
+  (() => { const r = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y1\nMPP\nOUT Y0\nEND');
+    const f = r.rungs[0] && r.rungs[0].expr;
+    return r.errors.length === 0 && f && f.kind === 'fork' && f.arms.length === 2 &&
+      f.arms[0].coils[0].dev === 'Y1' && f.arms[1].coils[0].dev === 'Y0'; })(),
+  JSON.stringify(Parser.parse('LD X0\nMPS\nAND X1\nOUT Y1\nMPP\nOUT Y0\nEND').errors));
+check('MPS con operando → error',
+  Parser.parse('LD X0\nMPS X1\nOUT Y0\nEND').errors.some(e => /no lleva operandos/.test(e.cause)));
+check('MRD/MPP con operando → error',
+  Parser.parse('LD X0\nMPS\nOUT Y1\nMRD X1\nEND').errors.some(e => /no lleva operandos/.test(e.cause)));
+
+console.log('— MPS anidado (punto de guardado dentro de una rama) —');
+const nn1 = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y0\nMRD\nAND X2\nMPS\nOUT Y1\nMRD\nAND X3\nOUT Y2\nEND');
+check('MPS anidado: sin errores (solo avisa de MPP faltante)',
+  nn1.errors.length === 0 && nn1.warnings.some(w => /MPP/.test(w.cause)), JSON.stringify(nn1.errors));
+check('MPS anidado: 1 rung con fork externo de 2 ramas',
+  nn1.rungs.length === 1 && nn1.rungs[0].expr.kind === 'fork' && nn1.rungs[0].expr.arms.length === 2);
+check('MPS anidado: la 2ª rama contiene un fork interno',
+  nn1.rungs[0].expr.arms[1].node.kind === 'fork' && nn1.rungs[0].expr.arms[1].node.arms.length === 2);
+check('MPS anidado: bobinas Y0|Y1|Y2 en las hojas',
+  (() => { const f = nn1.rungs[0].expr; return f.arms[0].coils[0].dev === 'Y0' &&
+    f.arms[1].node.arms[0].coils[0].dev === 'Y1' && f.arms[1].node.arms[1].coils[0].dev === 'Y2'; })());
+check('MPS anidado: la base interna reusa la identidad externa (X0 no se duplica)',
+  !JSON.stringify(nn1.rungs[0].expr.arms[1].node.base).includes('X0'));
+const dn1 = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y0\nMRD\nAND X2\nMPS\nOUT Y1\nMRD\nAND X3\nOUT Y2\nMPP\nMPP\nEND');
+check('MPS anidado con MPP doble: sin errores ni warnings',
+  dn1.errors.length === 0 && dn1.warnings.length === 0, JSON.stringify(dn1.warnings));
+check('MPS anidado: layout dibuja 1 banda y ancho 3 celdas',
+  (() => { const l = Ladder.layout(nn1); return l.bands.length === 1 && l.bands[0].exprW === 3; })());
+
+// Tras MPP, un AND/OR/OUT posterior es una rama hermana del bloque cerrado (equivale a MRD),
+// no una continuación en serie: evita que X5/Y4 se superpongan con Y1.
+const pm1 = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y0\nMRD\nAND X2\nMPS\nOUT Y1\nMRD\nAND X3\nOUT Y2\nMRD\nAND X4\nOUT Y3\nMPP\nAND X5\nOUT Y4\nEND');
+check('MPP + AND/OUT: sin errores', pm1.errors.length === 0, JSON.stringify(pm1.errors));
+check('MPP + AND/OUT: 1 rung con fork externo de 2 ramas',
+  pm1.rungs.length === 1 && pm1.rungs[0].expr.kind === 'fork' && pm1.rungs[0].expr.arms.length === 2);
+const inner = pm1.rungs[0].expr.arms[1].node;
+check('MPP + AND/OUT: el fork interno gana una 4ª rama hermana (Y1|Y2|Y3|Y4)',
+  inner.kind === 'fork' && inner.arms.length === 4 &&
+  ['Y1', 'Y2', 'Y3', 'Y4'].every((y, i) => inner.arms[i].coils[0].dev === y), JSON.stringify(inner.arms.map(a => a.coils)));
+check('MPP + AND/OUT: X5 vive en la rama nueva, no en la base interna',
+  inner.arms[3].node.kind === 'series' && inner.arms[3].node.children[1].dev === 'X5' &&
+  !JSON.stringify(inner.base).includes('X5'));
+check('MPP + AND/OUT: layout 1 banda de 5 filas (rama hermana en fila propia)',
+  (() => { const l = Ladder.layout(pm1); return l.bands.length === 1 && l.bands[0].hCells === 5; })());
+
+// El 2º MPP debe subir al nivel del 1er MPS: AND X6 cuelga de X0 (hermano de X2), no del fork interno.
+const pm2 = Parser.parse('LD X0\nMPS\nAND X1\nOUT Y0\nMRD\nAND X2\nMPS\nOUT Y1\nMRD\nAND X3\nOUT Y2\nMRD\nAND X4\nOUT Y3\nMPP\nAND X5\nOUT Y4\nMPP\nAND X6\nOUT Y5\nEND');
+check('MPP anidado doble: sin errores ni warnings (MPS/MPP balanceados)',
+  pm2.errors.length === 0 && pm2.warnings.length === 0, JSON.stringify({ e: pm2.errors, w: pm2.warnings }));
+const f1b = pm2.rungs[0].expr;
+check('MPP doble: el fork externo gana una 3ª rama (X2-fork | X6)',
+  f1b.kind === 'fork' && f1b.arms.length === 3 && f1b.arms[1].node.kind === 'fork' &&
+  f1b.arms[0].coils[0].dev === 'Y0' && f1b.arms[2].coils[0].dev === 'Y5');
+check('MPP doble: Y5 cuelga de la base X0 (X6 en serie, no en la base interna)',
+  f1b.arms[2].node.kind === 'series' && f1b.arms[2].node.children[1].dev === 'X6');
+check('MPP doble: el fork interno conserva Y1|Y2|Y3|Y4',
+  f1b.arms[1].node.arms.length === 4 &&
+  ['Y1', 'Y2', 'Y3', 'Y4'].every((y, i) => f1b.arms[1].node.arms[i].coils[0].dev === y));
+check('MPP doble: layout 1 banda de 6 filas (Y5 en fila propia bajo X0)',
+  (() => { const l = Ladder.layout(pm2); return l.bands.length === 1 && l.bands[0].hCells === 6; })());
+
+console.log('— Caso real de usuario: dos grupos ORB en cadena (ANB explícito) —');
+const u1 = Parser.parse('LD X0\nAND X1\nLDI X2\nAND X3\nORB\nANI X4\nLD X5\nLD X6\nAND X7\nORB\nANB\nOUT Y0\nEND');
+check('netlist del usuario: sin errores ni warnings', u1.errors.length === 0 && u1.warnings.length === 0,
   JSON.stringify({ e: u1.errors, w: u1.warnings }));
 check('netlist del usuario: 1 rung', u1.rungs.length === 1);
 const eU = u1.rungs[0].expr;

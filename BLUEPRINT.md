@@ -111,10 +111,12 @@ Convención de desarrollo: cada bloque se abre con `/* ===== 04 RENDERER ===== *
 
 ```js
 Program  = { rungs: Rung[], endLine: number|null }
-Rung     = { line: number, expr: Node, coils: Coil[] }
+Rung     = { line: number, expr: Node, coils: Coil[], open: Node[] }
 Node     = { kind: 'contact', pol: 'NO'|'NC', dev: 'X12' }
          | { kind: 'series',   children: Node[] }
          | { kind: 'parallel', children: Node[] }
+         | { kind: 'identity' }                 // nodo neutro: comparte la condición común
+         | { kind: 'fork', base: Node, arms: [{ node: Node, coils: Coil[] }] }  // MPS/MRD/MPP
 Coil     = { kind: 'out'|'set'|'rst', dev: 'Y0'|'M3' }
          | { kind: 'timer',   dev: 'T0', preset: 50 }   // ×100 ms
          | { kind: 'counter', dev: 'C0', preset: 10 }
@@ -134,21 +136,26 @@ Error    = { line: number, text: string, cause: string, hint: string, severity: 
 | `OR d` / `ORI d` | `current = paralelo(current, contacto(d,NO/NC))` · error si `current == null` |
 | `ANB` | `b2 = current; b1 = stack.pop()` → `current = serie(b1, b2)` · error si no hay 2 bloques |
 | `ORB` | ídem → `current = paralelo(b1, b2)` |
+| `MPS` | `base = current` → `current = fork{ base, arms: [] }`; abre la primera rama (nodo neutro `identidad`). Se permite **anidar** (un `MPS` dentro de una rama abre un sub-`fork`). Error solo si hay bobina previa en el rango actual o si no hay `LD` |
+| `MRD` | Cierra la rama actual y abre una nueva rama con `identidad` (relee la base) · error si no hay `MPS` |
+| `MPP` | Cierra la rama actual y restaura `current` a la base guardada · error si no hay `MPS`. Un `MPS` sin `MPP` al cerrar el rung es **warning** (el diagrama se dibuja igual). Tras un `MPP`, un `AND`/`OR`/`OUT` posterior cuelga una **rama hermana del `fork` recién cerrado** (equivale a `MRD`) **sin volver a abrir su nivel de pila**, de modo que el siguiente `MPP` sube un nivel más (no re-cierra el mismo bloque) y la continuación nunca se superpone a las filas del bloque |
 | `OUT d` (Y/M) | Adjunta bobina al rung abierto (varias OUT consecutivas = bobinas en paralelo al final) |
 | `SET d` / `RST d` | Ídem, bobinas de enclavamiento/reset |
 | `OUT T# K#` / `OUT C# K#` | Bobina timer/contador con preset; validar K 0–9999 |
 | `END` | Cierra rung y programa; error si hay código después |
 | `; …` | Ignorado (comentario) |
 
-Cierre de rung: cuando llega un `LD/LDI` **con bobina ya colocada** (rung nuevo), un `END`, o fin de texto. Un `LD/LDI` sin bobina previa **no cierra el rung**: apila el bloque actual (sub-bloque para `ANB`/`ORB`), igual que GX Works.
+Cierre de rung: cuando llega un `LD/LDI` **con bobina ya colocada** (rung nuevo), un `END`, o fin de texto. Un `LD/LDI` sin bobina previa **no cierra el rung**: apila el bloque actual, igual que GX Works.
 
-**Completación implícita (ANB implícito):** al cerrar un rung, si la pila de bloques no está vacía, los bloques pendientes se combinan en serie con el resultado actual (`serie(bloque1, serie(bloque2, …, current))`) y se emite **warning** (no error) indicando que en GX Works conviene escribir `ANB`/`ORB` explícito. Así, `… ORB · ANI X4 · LD X5 · LD X6 · AND X7 · ORB · OUT Y0` dibuja el ladder natural (dos grupos paralelos en serie con `/X4`) sin bloquear al estudiante.
+**Ramas abiertas (sin ANB/ORB):** cada `LD/LDI` abre una rama nueva en la barra izquierda (un extremo en la barra, el otro "al aire"). Al cerrar un rung, si la pila de bloques todavía tiene bloques suspendidos (no combinados con `ANB`/`ORB`), esos bloques **no se fusionan**: se emite **warning** (no error) y se dibujan como ramas abiertas apiladas encima de la rama que sí lleva la bobina (`rung.open`). Así, `LD X0 · LD X1 · OUT Y0` dibuja dos ramas: `X0` colgando y `X1`→`(Y0)`, y es el programador quien debe unirlas con `ANB`/`ORB`.
 
-Al cerrar: si tras la completación `coils == []` → error "rung sin bobina". Al final del parseo se valida `END` único y presente.
+Ejemplo que sí combina explícitamente: `… ORB · ANI X4 · LD X5 · LD X6 · AND X7 · ORB · ANB · OUT Y0` dibuja los dos grupos paralelos en serie con `/X4`.
+
+Al cerrar: si `coils == []` → error "rung sin bobina". Al final del parseo se valida `END` único y presente.
 
 ### 6.2 Verificación semántica (después del parseo)
 
-- Bloques `LD` pendientes al cerrar el rung → **warning** + ANB implícito en serie (ver §6.1).
+- Bloques `LD` pendientes al cerrar el rung → **warning** + se dibujan como ramas abiertas (al aire) (ver §6.1).
 - Bobina `OUT` del mismo dispositivo en 2+ rungs → **warning** (en scan gana el último).
 - `SET`/`RST` sobre `T#`/`C#` → válido (reset de timer/contador).
 - Dispositivos válidos: `X|Y|M|T|C` + número 0–255; `K` 0–9999. Numeración decimal (simplificación didáctica vs octal de GX — documentada en la ayuda).
@@ -171,7 +178,8 @@ Al cerrar: si tras la completación `coils == []` → error "rung sin bobina". A
   - Contacto NO: dos trazos paralelos verticales; NC: igual + barra diagonal encima.
   - Bobina: paréntesis `( )` (dos arcos); `SET`: bobina con `S`; `RST`: con `R`.
   - Timer/Contador: caja rectangular con `T0 K50` y **valor vivo** (`acc`/`count`) en texto `<tspan class="value">`.
-- **Cables**: `<path>` ortogonales (`stroke-width: 2`); ramas paralelas en columnas desplazadas 72 px. La **unión de un grupo paralelo se dibuja exactamente donde termina su rama más larga**; toda rama más corta recibe un cable de extensión hasta ese punto (registrado como salida de esa rama, se resalta con su flujo). Todo nodo termina en un límite de celda (`RAIL_L + (col + ancho)·CELL_W`), lo que garantiza que la columna de bobinas nunca se solape con el circuito.
+- **Cables**: `<path>` ortogonales (`stroke-width: 2`); ramas paralelas en columnas desplazadas 72 px. El **punto de bifurcación de un grupo paralelo cae en el límite de celda** (la barra izquierda en el primer nivel, o el final del elemento anterior): las ramas arrancan directo de la barra/nodo, sin desplazamientos, de modo que en grupos en serie el cierre de uno y la apertura del siguiente coinciden en un único punto. La **unión de un grupo paralelo se dibuja exactamente donde termina su rama más larga**; toda rama más corta recibe un cable de extensión hasta ese punto (registrado como salida de esa rama, se resalta con su flujo). Todo nodo termina en un límite de celda (`RAIL_L + (col + ancho)·CELL_W`), lo que garantiza que la columna de bobinas nunca se solape con el circuito.
+- **Bifurcación `MPS/MRD/MPP`** (nodo `fork`): la condición común (`base`) se dibuja una sola vez en la fila superior; en su salida nace una vertical que baja por las filas de cada rama. El nodo neutro `identidad` se dibuja como paso directo (ancho 0), de modo que la base **no se repite** en cada rama. Cada rama apila sus propias bobinas a su derecha, alineadas con la columna de bobinas de la banda.
 - **Estados**: clase `.energized` (color acento + glow suave) aplicada por el simulador sobre nodos/cables ya creados — **el render nunca se reconstruye por tick**.
 - **Errores**: los rungs con error grave no se dibujan; se dibuja un rectángulo rojo tenue con el mensaje resumido. Las warnings sí dibujan.
 - Escala: el SVG crece en altura con scroll del contenedor (sin zoom en v1).
@@ -288,13 +296,15 @@ constantes K 0–9999, comentarios con ';'. Función normalize(linea): trim, col
 espacios, instrucción a mayúsculas, tolerar CRLF y tabs.
 
 Parser.parse(code) devuelve { program, errors, warnings } donde program es
-{ rungs: [...], endLine } y cada rung tiene { line, expr, coils }. Implementa la
-máquina de pila de bloques exacta de BLUEPRINT.md §6.1 (LD abre bloque, AND/OR
+{ rungs: [...], endLine } y cada rung tiene { line, expr, coils, open } (open = ramas
+LD suspendidas que quedaron "al aire"). Implementa la máquina de pila de bloques
+exacta de BLUEPRINT.md §6.1 (LD abre bloque, AND/OR
 combinan, ANB/ORB sacan dos bloques de la pila, OUT/SET/RST/T/C cierran con bobina,
 nuevo LD cierra el rung anterior). Errores por línea con { line, text, cause, hint,
 severity }: instrucción inválida, operando mal formado, AND/OR/OUT sin LD previo,
 ANB/ORB sin bloques, rung sin bobina, END ausente o múltiple, código tras END.
-Warnings: bobina OUT duplicada del mismo dispositivo en 2+ rungs.
+Warnings: bobina OUT duplicada del mismo dispositivo en 2+ rungs; bloques LD sin
+combinar al cerrar el rung (se dibujan abiertos).
 
 Añade un panel lateral plegable "Errores" bajo la consola que lista los errores
 (línea, causa, sugerencia) con clic → scroll a esa línea del textarea, y marca la
@@ -442,7 +452,7 @@ Añade /* ===== 09 UI ===== */ (y ajusta 10 App) a LadderHand/ladder-hand.html.
 - Accesibilidad: aria-labels en botones de icono, foco visible, contraste AA,
   orden de tabulación lógico.
 
-ACEPTACIÓN: todos los atajos funcionan; la chuleta cubre las 12 instrucciones + K;
+ACEPTACIÓN: todos los atajos funcionan; la chuleta cubre las 15 instrucciones + K;
 navegación completa por teclado; ningún botón sin aria-label.
 ```
 
@@ -492,7 +502,7 @@ dejes pendiente.
 
 - [ ] Sin red (DevTools Network vacío) en todo el flujo
 - [ ] 5 netlists canónicas → ladder correcto
-- [ ] 12 instrucciones: válido/inválido con sugerencia
+- [ ] 15 instrucciones: válido/inválido con sugerencia
 - [ ] Simulación: enclavamiento / timer / contador / RESET
 - [ ] Guardar → abrir idéntico; autoguardado y recuperación
 - [ ] SVG/PNG/PDF correctos
