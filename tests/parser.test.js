@@ -117,8 +117,20 @@ check('MPS sin MPP → warning (no error)',
     return r.errors.length === 0 && r.warnings.some(w => /MPP/.test(w.cause)) && r.rungs.length === 1; })());
 check('rama MPS sin bobina → error',
   Parser.parse('LD X0\nMPS\nAND X1\nMRD\nAND X2\nOUT Y2\nMPP\nEND').errors.some(e => /rama MPS anterior no tiene bobina/.test(e.cause)));
-check('LD dentro de MPS → error',
-  Parser.parse('LD X0\nMPS\nAND X1\nOUT Y1\nLD X2\nOUT Y2\nEND').errors.some(e => /no se usa dentro/.test(e.cause)));
+check('LD dentro de MPS: sub-bloque de la rama (no error)',
+  (() => { const r = Parser.parse('LD X0\nMPS\nLD X1\nAND X2\nANB\nOUT Y1\nMPP\nEND');
+    const f = r.rungs[0] && r.rungs[0].expr;
+    return r.errors.length === 0 && f && f.kind === 'fork' && f.arms.length === 1 &&
+      f.arms[0].coils[0].dev === 'Y1' && f.base.dev === 'X0'; })(),
+  JSON.stringify(Parser.parse('LD X0\nMPS\nLD X1\nAND X2\nANB\nOUT Y1\nMPP\nEND').errors));
+check('ANB/ORB dentro de MPS: ejemplo oficial Mitsubishi (3 ramas)',
+  (() => { const r = Parser.parse(
+      'LD X0\nMPS\nLD X1\nOR X2\nANB\nOUT Y0\nMRD\nLD X3\nAND X4\nLD X5\nAND X6\nORB\nANB\nOUT Y1\nMPP\nAND X7\nOUT Y2\nEND');
+    const f = r.rungs[0] && r.rungs[0].expr;
+    const devs = f ? f.arms.map(a => a.coils[0] && a.coils[0].dev) : [];
+    return r.errors.length === 0 && f && f.kind === 'fork' && f.arms.length === 3 &&
+      f.base.dev === 'X0' && devs.join(',') === 'Y0,Y1,Y2'; })(),
+  JSON.stringify(Parser.parse('LD X0\nMPS\nLD X1\nOR X2\nANB\nOUT Y0\nMRD\nLD X3\nAND X4\nLD X5\nAND X6\nORB\nANB\nOUT Y1\nMPP\nAND X7\nOUT Y2\nEND').errors));
 check('MPS tras bobina → error',
   Parser.parse('LD X0\nOUT Y0\nMPS\nAND X1\nOUT Y1\nMPP\nEND').errors.some(e => /antes de la primera bobina/.test(e.cause)));
 check('OUT tras MPP: rama hermana sobre la base (no error)',

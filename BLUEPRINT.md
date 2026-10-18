@@ -134,8 +134,9 @@ Error    = { line: number, text: string, cause: string, hint: string, severity: 
 | `LD d` / `LDI d` | Si `current` existe → `stack.push(current)`; `current = contacto(d, NO/NC)` |
 | `AND d` / `ANI d` | `current = serie(current, contacto(d,NO/NC))` · error si `current == null` |
 | `OR d` / `ORI d` | `current = paralelo(current, contacto(d,NO/NC))` · error si `current == null` |
-| `ANB` | `b2 = current; b1 = stack.pop()` → `current = serie(b1, b2)` · error si no hay 2 bloques |
-| `ORB` | ídem → `current = paralelo(b1, b2)` |
+| `ANB` | `b2 = acc; b1 = pila.pop()` → `acc = serie(b1, b2)` · error si no hay 2 bloques |
+| `ORB` | ídem → `acc = paralelo(b1, b2)` |
+| `LD`/`ANB`/`ORB` dentro de MPS/MRD/MPP | Se permiten (semántica Mitsubishi): cada **rama** (`arm`) lleva su propia pila de sub-bloques (`arm.stack`). `LD/LDI` dentro del bloque hace `push(acc)` y arranca un sub-bloque; `ANB/ORB` combinan usando `arm.stack`/`acc`. La `identidad` inicial de la rama actúa como marcador de la condición guardada por `MPS` (la `base`), por eso no se avisa si solo queda ella sin combinar |
 | `MPS` | `base = current` → `current = fork{ base, arms: [] }`; abre la primera rama (nodo neutro `identidad`). Se permite **anidar** (un `MPS` dentro de una rama abre un sub-`fork`). Error solo si hay bobina previa en el rango actual o si no hay `LD` |
 | `MRD` | Cierra la rama actual y abre una nueva rama con `identidad` (relee la base) · error si no hay `MPS` |
 | `MPP` | Cierra la rama actual y restaura `current` a la base guardada · error si no hay `MPS`. Un `MPS` sin `MPP` al cerrar el rung es **warning** (el diagrama se dibuja igual). Tras un `MPP`, un `AND`/`OR`/`OUT` posterior cuelga una **rama hermana del `fork` recién cerrado** (equivale a `MRD`) **sin volver a abrir su nivel de pila**, de modo que el siguiente `MPP` sube un nivel más (no re-cierra el mismo bloque) y la continuación nunca se superpone a las filas del bloque |

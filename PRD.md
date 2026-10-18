@@ -151,7 +151,7 @@ Oportunidad: convertir la experiencia retro del handheld (escribir `LD X0` → E
 | `OR` / `ORI` | `OR Y0` | Contacto NO / NC en paralelo | Rama paralela |
 | `ANB` | `ANB` | Serie entre los dos últimos bloques | Une dos ramas en serie |
 | `ORB` | `ORB` | Paralelo entre los dos últimos bloques | Une dos ramas en paralelo |
-| `MPS` / `MRD` / `MPP` | `MPS` | Bifurcación de salidas divergentes: `MPS` guarda la condición común, `MRD` la relee sin borrarla y `MPP` la restaura. Cada rama (entre `MRD`/`MPP`) lleva sus propias bobinas. Tras `MPP`, un `AND`/`OR`/`OUT` cuelga una rama hermana del bloque cerrado (equivalente a `MRD`) **sin reabrir su nivel de pila**, así el siguiente `MPP` sube un nivel más (no re-cierra el mismo bloque) | Conductor común con ramas verticales hacia varias bobinas |
+| `MPS` / `MRD` / `MPP` | `MPS` | Bifurcación de salidas divergentes: `MPS` guarda la condición común, `MRD` la relee sin borrarla y `MPP` la restaura. Cada rama (entre `MRD`/`MPP`) lleva sus propias bobinas. Dentro del bloque se admiten `LD`/`LDI`/`ANB`/`ORB` para formar sub-bloques en cada rama (como en Mitsubishi). Tras `MPP`, un `AND`/`OR`/`OUT` cuelga una rama hermana del bloque cerrado (equivalente a `MRD`) **sin reabrir su nivel de pila**, así el siguiente `MPP` sube un nivel más (no re-cierra el mismo bloque) | Conductor común con ramas verticales hacia varias bobinas |
 | `OUT` | `OUT Y0` | Bobina (también válida para M) | Bobina |
 | `SET` / `RST` | `SET M0` / `RST C0` | Enclavamiento / reset (Válido para Y, M, T, C) | Bobina S / bobina R |
 | `OUT T# K#` | `OUT T0 K50` | Temporizador TON, base 100 ms (K50 = 5 s), no retentivo | Caja de timer con valor |
@@ -207,7 +207,8 @@ El bloque `MPS/MRD/MPP` se representa con un nodo `fork`: `base` es la condició
 | `MPS`/`MRD`/`MPP` mal balanceados | `MRD`/`MPP` sin `MPS` → Error; `MPS` sin `MPP` al cerrar el rung → **Warning** (el diagrama se dibuja igual) |
 | Rama `MPS`/`MRD`/`MPP` sin bobina | Error "La rama no tiene bobina" |
 | `OUT`/`SET`/`RST`/`AND`/`OR` tras `MPP` | **Válido**: crea una rama hermana del bloque cerrado sobre su base (equivalente a `MRD`); no se encadena en serie ni se superpone |
-| `LD`/`ANB`/`ORB`/`MPS` dentro de un bloque `MPS`/`MRD`/`MPP` | Error "no se usa dentro de un bloque MPS" |
+| `LD`/`LDI`/`ANB`/`ORB` dentro de un bloque `MPS`/`MRD`/`MPP` | **Válido**: forman sub-bloques dentro de cada rama (semántica Mitsubishi). `LD` apila el bloque actual de la rama y abre uno nuevo; `ANB`/`ORB` combinan usando la pila de la rama |
+| Bloques `LD` de una rama `MPS` sin combinar al cerrar la rama (`MRD`/`MPP`) | **Warning**: se dibuja igual; recuerda unirlos con `ANB`/`ORB` (la `identidad` de la base no cuenta como bloque pendiente) |
 | Rung sin bobina antes del siguiente `LD` | Error "El rung de la línea N no tiene bobina (OUT/SET/RST)" |
 | Bloques `LD` sin combinar al llegar la bobina | **Warning + rama abierta**: cada `LD` abre una rama nueva en la barra izquierda; los bloques sin `ANB`/`ORB` se dibujan "al aire" (un extremo colgando) y el aviso recuerda combinarlos con `ANB`/`ORB` |
 | Falta `END` o hay más de uno | Error con línea y sugerencia |

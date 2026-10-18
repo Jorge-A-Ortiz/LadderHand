@@ -293,10 +293,30 @@ const Parser = (() => {
     let detached = null;   // { fork, arm } | null
 
     const identity = () => ({ kind: 'identity' });
+    const newArm = () => ({ node: identity(), coils: [], stack: [] });
     const activeFrame = () => detached || (frames.length ? frames[frames.length - 1] : null);
     const accGet = () => { const f = activeFrame(); return f ? f.arm.node : current; };
     const accSet = v => { const f = activeFrame(); if (f) f.arm.node = v; else current = v; };
     const curCoils = () => { const f = activeFrame(); return f ? f.arm.coils : coils; };
+    // Pila de sub-bloques LD/ANB/ORB: propia de cada rama (o la del rung si no hay rama).
+    const stackRef = () => { const f = activeFrame(); return f ? f.arm.stack : stack; };
+    const flushArmStack = (arm, ln) => {
+      if (arm && arm.stack && arm.stack.length > 0){
+        // Las `identity` de la base son el marcador de la condición guardada por MPS:
+        // si solo queda eso, la rama es válida (no hay bloques reales sin combinar).
+        const n = arm.stack.filter(b => b && b.kind !== 'identity').length;
+        if (n > 0){
+          warnings.push({
+            line: ln, text: '',
+            cause: n === 1
+              ? 'Quedó 1 bloque LD sin combinar dentro de la rama MPS'
+              : `Quedaron ${n} bloques LD sin combinar dentro de la rama MPS`,
+            hint: 'Únelos con ANB/ORB antes de MRD/MPP.', severity: 'warning'
+          });
+        }
+        arm.stack.length = 0;
+      }
+    };
     const forkCoils = n => !n || n.kind !== 'fork' ? [] :
       n.arms.reduce((a, arm) => a.concat(arm.coils, forkCoils(arm.node)), []);
     const armHasCoils = arm => arm.coils.length > 0 || forkCoils(arm.node).length > 0;
@@ -306,7 +326,7 @@ const Parser = (() => {
     // Crea, de forma perezosa, la rama hermana en el fork cerrado (`detached`).
     const ensureSiblingArm = () => {
       if (!detached || detached.arm) return;
-      const arm = { node: identity(), coils: [] };
+      const arm = newArm();
       detached.fork.arms.push(arm);
       detached.arm = arm;
     };
@@ -324,6 +344,8 @@ const Parser = (() => {
           hint: 'Añade un MPP por cada MPS (al final de cada bloque). El diagrama se dibuja igual.',
           severity: 'warning'
         });
+        frames.forEach(fr => { if (fr.arm.stack) fr.arm.stack.length = 0; });
+        if (detached && detached.arm && detached.arm.stack) detached.arm.stack.length = 0;
         frames.length = 0;
       }
       // Cada LD/LDI abre una rama nueva en la barra izquierda (como GX Works).
@@ -391,15 +413,24 @@ const Parser = (() => {
       }
 
       if (op === 'LD' || op === 'LDI'){
-        detached = null;
-        if (frames.length > 0){
-          bad('LD/LDI no se usa dentro de un bloque MPS/MRD/MPP',
-            'Dentro de MPS usa AND/ANI/OR/ORI y cierra con MPP antes de un LD.'); return;
-        }
         const dev = parts[1] ? Dialect.parseDev(parts[1]) : null;
         if (!dev || parts.length !== 2){
           bad('LD/LDI requiere un dispositivo (X, Y, M, T o C)', 'Ejemplo: LD X0'); return;
         }
+        const node = { kind: 'contact', pol: (op === 'LD' ? 'NO' : 'NC'), dev: dev.id, line: ln };
+        if (frames.length > 0){
+          // Dentro de un bloque MPS/MRD/MPP (o rama hermana): abre un sub-bloque de la rama
+          // (como en Mitsubishi); se une al resto de la rama con ANB/ORB.
+          ensureSiblingArm();
+          if (curCoils().length > 0){
+            bad('LD/LDI va después de la bobina de la rama',
+              'Dentro de MPS cada sub-bloque va antes de su bobina; empieza otra rama con MRD.'); return;
+          }
+          stackRef().push(accGet());   // abre sub-bloque (identidad la primera vez)
+          accSet(node);
+          return;
+        }
+        detached = null;
         if (current !== null && (coils.length > 0 || current.kind === 'fork')){
           closeRung();          // el rung anterior ya tiene bobina: este LD abre rung nuevo
           rungStart = ln;
@@ -408,7 +439,7 @@ const Parser = (() => {
         } else {
           rungStart = ln;       // primera instrucción del rung
         }
-        current = { kind: 'contact', pol: (op === 'LD' ? 'NO' : 'NC'), dev: dev.id, line: ln };
+        current = node;
         return;
       }
 
@@ -438,23 +469,21 @@ const Parser = (() => {
       }
 
       if (op === 'ANB' || op === 'ORB'){
-        if (frames.length > 0){
-          bad(`${op} no se usa dentro de un bloque MPS/MRD/MPP`,
-            'Dentro de MPS usa AND/ANI/OR/ORI y cierra con MPP antes de ANB/ORB.'); return;
-        }
-        if (current === null || stack.length === 0){
+        const acc = accGet();
+        const st = stackRef();
+        if (acc === null || st.length === 0){
           bad(`${op} necesita dos bloques previos para combinar`,
             'Cada LD extra abre un bloque; combina dos con ANB (serie) u ORB (paralelo).');
           return;
         }
-        if (coils.length > 0){
-          bad(`La instrucción ${op} va después de la bobina del rung`,
+        if (curCoils().length > 0){
+          bad(`La instrucción ${op} va después de la bobina`,
             'Combina los bloques antes de la bobina.'); return;
         }
-        const b1 = stack.pop();
-        current = (op === 'ANB')
-          ? { kind: 'series', children: [b1, current], line: ln }
-          : { kind: 'parallel', children: [b1, current], line: ln };
+        const b1 = st.pop();
+        accSet((op === 'ANB')
+          ? { kind: 'series', children: [b1, acc], line: ln }
+          : { kind: 'parallel', children: [b1, acc], line: ln });
         return;
       }
 
@@ -524,7 +553,7 @@ const Parser = (() => {
           }
           const fork = { kind: 'fork', base: acc, arms: [], line: ln };
           accSet(fork);
-          const arm = { node: identity(), coils: [] };
+          const arm = newArm();
           fork.arms.push(arm);
           frames.push({ fork, arm });
           return;
@@ -541,11 +570,13 @@ const Parser = (() => {
         }
         if (op === 'MRD'){
           detached = null;   // MRD abre rama en el nivel abierto actual, no cuelga del fork cerrado
-          const arm = { node: identity(), coils: [] };
+          flushArmStack(top.arm, ln);
+          const arm = newArm();
           top.fork.arms.push(arm);
           top.arm = arm;
           return;
         }
+        flushArmStack(top.arm, ln);
         detached = null;
         const popped = frames.pop();   // MPP: sube un nivel de la pila MPS
         detached = { fork: popped.fork, arm: null };   // el fork cerrado admite ramas hermanas
@@ -1560,7 +1591,7 @@ const UI = (() => {
       ['AND d / ANI d', 'Contacto NO / NC en serie.', 'AND X1'],
       ['OR d / ORI d', 'Contacto NO / NC en paralelo.', 'OR Y0'],
       ['ANB / ORB', 'Serie / paralelo entre los dos últimos bloques (cada LD abre un bloque).', 'LD X0 · LD X1 · ORB'],
-      ['MPS / MRD / MPP', 'Bifurcación de salidas divergentes: MPS guarda la condición común, MRD la relee y MPP la restaura. Cada rama lleva sus bobinas; se pueden anidar (un MPS dentro de una rama crea un punto de guardado nuevo). Tras MPP, un AND/OR/OUT abre una rama hermana del bloque (igual que MRD) sin reabrir su nivel, así el siguiente MPP sube al bloque anterior.', 'LD X0 · MPS · AND X1 · OUT Y1 · MRD · AND X2 · OUT Y2 · MPP'],
+      ['MPS / MRD / MPP', 'Bifurcación de salidas divergentes: MPS guarda la condición común, MRD la relee y MPP la restaura. Cada rama lleva sus bobinas; se pueden anidar (un MPS dentro de una rama crea un punto de guardado nuevo). Dentro del bloque se admiten LD/LDI y ANB/ORB para armar sub-bloques en cada rama. Tras MPP, un AND/OR/OUT abre una rama hermana del bloque (igual que MRD) sin reabrir su nivel, así el siguiente MPP sube al bloque anterior.', 'LD X0 · MPS · LD X1 · OR X2 · ANB · OUT Y1 · MRD · AND X3 · OUT Y2 · MPP'],
       ['OUT d', 'Bobina normal (Y o M).', 'OUT Y0'],
       ['SET d / RST d', 'Enclava / libera (Y, M) · resetea timers y contadores.', 'SET M0 · RST C0'],
       ['OUT T# K#', 'Temporizador TON de 100 ms, no retentivo. K50 = 5 s.', 'OUT T0 K50'],
