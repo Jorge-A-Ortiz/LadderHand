@@ -111,7 +111,9 @@ Convención de desarrollo: cada bloque se abre con `/* ===== 04 RENDERER ===== *
 
 ```js
 Program  = { rungs: Rung[], endLine: number|null }
-Rung     = { line: number, expr: Node, coils: Coil[], open: Node[] }
+Rung     = { line: number, expr: Node, coils: Coil[], open: Node[],
+             mcOpen?: { level: 0..7, dev: 'M100'|null },  // rung MC (expr = condición)
+             mcrClose?: 0..7 }                            // rung MCR (expr = identidad)
 Node     = { kind: 'contact', pol: 'NO'|'NC', dev: 'X12' }
          | { kind: 'series',   children: Node[] }
          | { kind: 'parallel', children: Node[] }
@@ -140,6 +142,8 @@ Error    = { line: number, text: string, cause: string, hint: string, severity: 
 | `MPS` | `base = current` → `current = fork{ base, arms: [] }`; abre la primera rama (nodo neutro `identidad`). Se permite **anidar** (un `MPS` dentro de una rama abre un sub-`fork`). Error solo si hay bobina previa en el rango actual o si no hay `LD` |
 | `MRD` | Cierra la rama actual y abre una nueva rama con `identidad` (relee la base) · error si no hay `MPS` |
 | `MPP` | Cierra la rama actual y restaura `current` a la base guardada · error si no hay `MPS`. Un `MPS` sin `MPP` al cerrar el rung es **warning** (el diagrama se dibuja igual). Tras un `MPP`, un `AND`/`OR`/`OUT` posterior cuelga una **rama hermana del `fork` recién cerrado** (equivale a `MRD`) **sin volver a abrir su nivel de pila**, de modo que el siguiente `MPP` sube un nivel más (no re-cierra el mismo bloque) y la continuación nunca se superpone a las filas del bloque |
+| `MC N# [Y/M]` | **Control maestro.** El rung debe llevar una condición (sin bobinas): `expr = current`, `coils = []`, `mcOpen = { level, dev }`. `level` debe ser exactamente el número de MC abiertos (`mcStack.length`, anidado estricto N0→N7); sin operando ⇒ N0. `dev` opcional (Y/M) replica el estado del MC. Error dentro de un bloque `MPS/MRD/MPP`, sin condición, tras bobina o con nivel fuera de orden |
+| `MCR N#` | Cierra el rung pendiente (con su bobina) y emite `{ expr: identidad, coils: [], mcrClose: level }`. Cierra el nivel `N#` **y todos los más profundos**. Error si `N#` no está abierto. Al final del parseo, cada `MC` sin su `MCR` es **warning** (el diagrama se dibuja igual) |
 | `OUT d` (Y/M) | Adjunta bobina al rung abierto (varias OUT consecutivas = bobinas en paralelo al final) |
 | `SET d` / `RST d` | Ídem, bobinas de enclavamiento/reset |
 | `OUT T# K#` / `OUT C# K#` | Bobina timer/contador con preset; validar K 0–9999 |
@@ -153,6 +157,8 @@ Cierre de rung: cuando llega un `LD/LDI` **con bobina ya colocada** (rung nuevo)
 Ejemplo que sí combina explícitamente: `… ORB · ANI X4 · LD X5 · LD X6 · AND X7 · ORB · ANB · OUT Y0` dibuja los dos grupos paralelos en serie con `/X4`.
 
 Al cerrar: si `coils == []` → error "rung sin bobina". Al final del parseo se valida `END` único y presente.
+
+**Zona MC/MCR (control maestro):** con la condición de un `MC N#` en OFF, las instrucciones entre ese `MC` y su `MCR` no se ejecutan. Se comporta como el bus desplazado de Mitsubishi: dentro de la zona, la condición de cada rung se combina con `AND` sobre el estado del MC (si el MC está OFF, la zona entera queda sin energía). Al resetearse la zona se liberan las bobinas normales (`OUT` de Y/M y los timers no retentivos), mientras **se retienen** los timers retentivos, los contadores y todo lo fijado con `SET`/`RST` (no se ejecuta su instrucción mientras la zona está OFF). `MCR N#` cierra su nivel y los más profundos. Los niveles se anidan de N0 a N7.
 
 ### 6.2 Verificación semántica (después del parseo)
 
@@ -181,6 +187,7 @@ Al cerrar: si `coils == []` → error "rung sin bobina". Al final del parseo se 
   - Timer/Contador: caja rectangular con `T0 K50` y **valor vivo** (`acc`/`count`) en texto `<tspan class="value">`.
 - **Cables**: `<path>` ortogonales (`stroke-width: 2`); ramas paralelas en columnas desplazadas 72 px. El **punto de bifurcación de un grupo paralelo cae en el límite de celda** (la barra izquierda en el primer nivel, o el final del elemento anterior): las ramas arrancan directo de la barra/nodo, sin desplazamientos, de modo que en grupos en serie el cierre de uno y la apertura del siguiente coinciden en un único punto. La **unión de un grupo paralelo se dibuja exactamente donde termina su rama más larga**; toda rama más corta recibe un cable de extensión hasta ese punto (registrado como salida de esa rama, se resalta con su flujo). Todo nodo termina en un límite de celda (`RAIL_L + (col + ancho)·CELL_W`), lo que garantiza que la columna de bobinas nunca se solape con el circuito.
 - **Bifurcación `MPS/MRD/MPP`** (nodo `fork`): la condición común (`base`) se dibuja una sola vez en la fila superior; en su salida nace una vertical que baja por las filas de cada rama. El nodo neutro `identidad` se dibuja como paso directo (ancho 0), de modo que la base **no se repite** en cada rama. Cada rama apila sus propias bobinas a su derecha, alineadas con la columna de bobinas de la banda.
+- **Zona `MC/MCR`**: cada nivel abierto desplaza la barra de bus hacia la derecha (`levelBusX`, en `MC_DX=8` px tras la salida del rung de `MC`). Los rungs de la zona arrancan en `band.x0` (la barra desplazada) en lugar de `RAIL_L`. Se dibuja una **barra vertical** (`line.wire.mcbar`) en `spans[i].barX` desde el rung del `MC` hasta el del `MCR`, con las etiquetas `MC N# [dev]` arriba y `MCR N#` abajo (`text.mc`). El rung de `MC` enlaza su salida con la barra (stub corto); el de `MCR` dibuja un tramo corto de bus. Como los rungs de un nivel interno empiezan en la barra del nivel y los externos en la suya, y la barra de un nivel solo abarca las filas de ese nivel, **la columna de bobinas nunca coincide con una barra**. `spans` se anidan (barra interior más a la derecha y más corta).
 - **Estados**: clase `.energized` (color acento + glow suave) aplicada por el simulador sobre nodos/cables ya creados — **el render nunca se reconstruye por tick**.
 - **Errores**: los rungs con error grave no se dibujan; se dibuja un rectángulo rojo tenue con el mensaje resumido. Las warnings sí dibujan.
 - Escala: el SVG crece en altura con scroll del contenedor (sin zoom en v1).
@@ -193,13 +200,15 @@ Al cerrar: si `coils == []` → error "rung sin bobina". Al final del parseo se 
 Cada 100 ms (si state === RUN):
  1. entradas  ← interruptores de la UI (X)
  2. por cada rung EN ORDEN:
-      cond = evaluar(expr)        // contactos leen estado ACTUAL de X/Y/M/T/C
-      para cada bobina del rung: escribir efecto (OUT/SET/RST/T/C)
+      enclosing = AND de los MC abiertos y activos (bus desplazado)
+      si rung.mcOpen:  cond = evaluar(expr, enclosing) → estado[dev]  ; pila.push({level, active:cond})
+      si rung.mcrClose: pop de todos los niveles >= mcrClose
+      si rung normal:  cond = evaluar(expr, enclosing) ; por cada bobina: efecto
  3. actualizar clases .energized y textos de valor en el SVG
  4. refrescar interruptores si algún M/T/C aparece (solo X tiene interruptor)
 ```
 
-- `evaluar(nodo)`: contacto NO → `estado[dev]`; NC → `!estado[dev]`; serie → AND; paralelo → OR.
+- `evaluar(nodo, enclosing)`: contacto NO → `estado[dev]`; NC → `!estado[dev]`; serie → AND; paralelo → OR; y el resultado se combina con `enclosing` (`cond && enclosing`). Con la zona MC en OFF (`enclosing == false`) ninguna bobina de la zona recibe flujo, así que `OUT` se libera y los timers no retentivos se resetean, mientras `SET`/`RST`, contadores y timers retentivos **no se tocan** (coincide con el manual Mitsubishi). El estado de cada `MC` se expone en `Renderer.applyEnergy(nf, ce, mcFlow)` para iluminar la barra (`mcbar`).
 - Estados iniciales: RESET pone `Y/M = false`, `T.acc = 0`, `C.count = 0`; los interruptores X quedan como el usuario los dejó.
 - Botones: `▶ RUN / ⏸ PAUSE / ⟲ RESET` + indicador de estado. Cambiar el código mientras corre → re-parseo y la simulación continúa con el nuevo IR (los estados persisten si los dispositivos siguen existiendo).
 

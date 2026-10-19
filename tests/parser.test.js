@@ -209,6 +209,54 @@ check('netlist del usuario: serie(par(X0X1 ∥ /X2X3, /X4), par(X5, serie(X6,X7)
 check('netlist del usuario: bobina OUT Y0', u1.rungs[0].coils[0].dev === 'Y0');
 check('netlist del usuario: layout genera 1 banda', Ladder.layout(u1).bands.length === 1);
 
+console.log('— MC / MCR (control maestro) —');
+const mc1 = Parser.parse('LD X0\nMC N0 M100\nLD X1\nOUT Y0\nLD X2\nOUT Y1\nMCR N0\nEND');
+check('MC/MCR simple: sin errores ni warnings', mc1.errors.length === 0 && mc1.warnings.length === 0,
+  JSON.stringify({ e: mc1.errors, w: mc1.warnings }));
+check('MC/MCR simple: 4 rungs (cond MC, 2 de zona, MCR)',
+  mc1.rungs.length === 4 && mc1.rungs[0].mcOpen.level === 0 && mc1.rungs[0].mcOpen.dev === 'M100' &&
+  mc1.rungs[0].coils.length === 0 && mc1.rungs[3].mcrClose === 0);
+check('MC/MCR: el rung de MC lleva la condición (X0) y sin bobina',
+  mc1.rungs[0].expr.kind === 'contact' && mc1.rungs[0].expr.dev === 'X0');
+check('MC/MCR: layout 1 barra que abarca toda la zona',
+  (() => { const l = Ladder.layout(mc1); return l.spans.length === 1 && l.spans[0].level === 0 &&
+    l.spans[0].yBottom > l.spans[0].yTop; })());
+check('MC/MCR: los rungs de la zona arrancan desplazados (x0 > RAIL_L)',
+  (() => { const l = Ladder.layout(mc1); return l.bands[1].x0 > Ladder.RAIL_L &&
+    l.bands[1].x0 === l.spans[0].barX; })());
+check('MC sin operando → N0',
+  (() => { const r = Parser.parse('LD X0\nMC\nLD X1\nOUT Y0\nMCR\nEND');
+    return r.errors.length === 0 && r.rungs[0].mcOpen.level === 0 && r.rungs[2].mcrClose === 0; })(),
+  JSON.stringify(Parser.parse('LD X0\nMC\nLD X1\nOUT Y0\nMCR\nEND').errors));
+check('MC sin condición → error',
+  Parser.parse('MC N0 M100\nLD X1\nOUT Y0\nMCR N0\nEND').errors.some(e => /Falta la condición/.test(e.cause)));
+check('MC tras bobina → error',
+  Parser.parse('LD X0\nOUT Y0\nMC N0\nEND').errors.some(e => /antes de cualquier bobina|Falta la condición/.test(e.cause)));
+check('MC N1 sin N0 → error de orden',
+  Parser.parse('LD X0\nMC N1\nLD X1\nOUT Y0\nMCR N1\nEND').errors.some(e => /fuera de orden/.test(e.cause)));
+check('MC con operando inválido → error',
+  Parser.parse('LD X0\nMC X1\nLD X2\nOUT Y0\nMCR N0\nEND').errors.some(e => /operando inválido/.test(e.cause)));
+check('MCR sin MC → error',
+  Parser.parse('LD X0\nOUT Y0\nMCR N0\nEND').errors.some(e => /sin un MC N0 abierto/.test(e.cause)));
+check('MC sin MCR → warning (no error)',
+  (() => { const r = Parser.parse('LD X0\nMC N0\nLD X1\nOUT Y0\nEND');
+    return r.errors.length === 0 && r.warnings.some(w => /MCR/.test(w.cause)); })());
+check('MC dentro de MPS → error',
+  Parser.parse('LD X0\nMPS\nMC N0\nLD X1\nOUT Y0\nMPP\nEND').errors.some(e => /dentro de un bloque MPS/.test(e.cause)));
+
+const mcN = Parser.parse('LD X0\nMC N0\nLD X1\nOUT Y0\nLD X2\nMC N1\nLD X3\nOUT Y1\nMCR N1\nLD X4\nOUT Y2\nMCR N0\nEND');
+check('MC anidado: sin errores', mcN.errors.length === 0, JSON.stringify(mcN.errors));
+check('MC anidado: profundidades 0,1,1,2,2,1,1',
+  (() => { const d = Ladder.layout(mcN).bands.map(b => b.depth); return d.join(',') === '0,1,1,2,2,1,1'; })());
+check('MC anidado: 2 barras (N1 dentro de N0, más a la derecha)',
+  (() => { const l = Ladder.layout(mcN);
+    const s0 = l.spans.find(s => s.level === 0), s1 = l.spans.find(s => s.level === 1);
+    return l.spans.length === 2 && s0.barX < s1.barX && s1.yTop > s0.yTop && s1.yBottom < s0.yBottom; })());
+check('MCR N0 con dos niveles abiertos cierra ambos (sin warning)',
+  (() => { const r = Parser.parse('LD X0\nMC N0\nLD X1\nMC N1\nLD X2\nOUT Y0\nMCR N0\nEND');
+    return r.errors.length === 0 && r.warnings.length === 0; })(),
+  JSON.stringify({ e: Parser.parse('LD X0\nMC N0\nLD X1\nMC N1\nLD X2\nOUT Y0\nMCR N0\nEND').errors }));
+
 console.log('— Layout y rendimiento —');
 const lay = Ladder.layout(ex1);
 check('layout: 1 banda con medidas', lay.bands.length === 1 && lay.width > 0 && lay.height > 0);

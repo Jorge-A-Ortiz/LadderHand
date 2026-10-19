@@ -103,6 +103,8 @@ text.dev{font:12px var(--mono);fill:var(--ink)}
 text.val{font:11px var(--mono);fill:var(--accent);font-weight:700}
 text.preset{font:11px var(--mono);fill:var(--muted)}
 .rungnum{font:11px var(--mono);fill:var(--muted)}
+.wire.mcbar{stroke-width:3}
+text.mc{font:11px var(--mono);fill:var(--accent);font-weight:700}
 .ph{font:13px var(--sans);fill:var(--muted)}
 .ghost{opacity:.35}
 
@@ -254,9 +256,10 @@ kbd{font:12px var(--mono);background:#eef2f7;border:1px solid var(--line);border
 // ==PURE-START==
 /* ===== 01 DIALECT ===== */
 const Dialect = (() => {
-  const OPS = ['LD','LDI','AND','ANI','OR','ORI','ANB','ORB','MPS','MRD','MPP','OUT','SET','RST','END'];
+  const OPS = ['LD','LDI','AND','ANI','OR','ORI','ANB','ORB','MPS','MRD','MPP','MC','MCR','OUT','SET','RST','END'];
   const DEV = /^([XYMTC])(\d{1,3})$/;
   const KON = /^K(\d{1,4})$/;
+  const NON = /^N([0-7])$/;
   function normalizeLine(raw){
     let s = String(raw);
     const ci = s.indexOf(';');
@@ -275,7 +278,7 @@ const Dialect = (() => {
     const m = KON.exec(tok || '');
     return m ? +m[1] : null;
   }
-  return { OPS, DEV, KON, normalizeLine, parseDev, parseK };
+  return { OPS, DEV, KON, NON, normalizeLine, parseDev, parseK };
 })();
 
 /* ===== 02 PARSER ===== */
@@ -291,6 +294,7 @@ const Parser = (() => {
     // (equivale a MRD). `detached` guarda ese fork cerrado: la rama nueva se cuelga
     // de él SIN reabrir su nivel de pila, de modo que el siguiente MPP sigue subiendo.
     let detached = null;   // { fork, arm } | null
+    const mcStack = [];    // niveles MC abiertos: { level, dev, line }
 
     const identity = () => ({ kind: 'identity' });
     const newArm = () => ({ node: identity(), coils: [], stack: [] });
@@ -583,11 +587,72 @@ const Parser = (() => {
         return;
       }
 
+      if (op === 'MC' || op === 'MCR'){
+        if (frames.length > 0 || detached){
+          bad(`${op} no puede ir dentro de un bloque MPS/MRD/MPP`,
+            'Cierra el bloque MPS con MPP antes de MC/MCR.'); return;
+        }
+        let level = null, dev = null;
+        for (let k = 1; k < parts.length; k++){
+          const nm = Dialect.NON.exec(parts[k]);
+          if (nm){ level = +nm[1]; continue; }
+          const dd = Dialect.parseDev(parts[k]);
+          if (dd && (dd.family === 'Y' || dd.family === 'M')){ dev = dd.id; continue; }
+          bad(`${op}: operando inválido "${parts[k]}"`,
+            op === 'MC' ? 'Formato: MC N0 M100 (nivel N0–N7 y relé Y/M opcional).'
+                        : 'Formato: MCR N0 (nivel N0–N7).'); return;
+        }
+        if (level === null) level = 0;
+        if (op === 'MC'){
+          if (stack.length > 0 || (current && current.kind === 'fork')){
+            bad('MC no puede ir tras bloques LD/MPS sin combinar',
+              'Combina los bloques con ANB/ORB antes de MC.'); return;
+          }
+          if (current === null){
+            bad('Falta la condición del MC',
+              'Antes de MC debe ir un LD/LDI (condición que activa la zona). Ejemplo: LD X0 · MC N0 M100'); return;
+          }
+          if (coils.length > 0){
+            bad('MC va antes de cualquier bobina', 'La línea de MC es solo la condición: LD … MC N0.'); return;
+          }
+          if (level !== mcStack.length){
+            bad(`MC N${level} fuera de orden`, mcStack.length === 0
+              ? 'El primer MC debe ser N0.'
+              : `Aquí corresponde MC N${mcStack.length} (anidado; el más profundo es N7).`); return;
+          }
+          rungs.push({ line: rungStart, expr: current, coils: [], open: [], mcOpen: { level, dev } });
+          mcStack.push({ level, dev, line: rungStart });
+          current = null; coils = []; stack = []; detached = null;
+          return;
+        }
+        // MCR: cierra el rung pendiente (con su bobina) y luego abre el cierre.
+        closeRung();
+        if (!mcStack.some(m => m.level === level)){
+          bad(`MCR N${level} sin un MC N${level} abierto`, mcStack.length
+            ? `MC abiertos: N${mcStack.map(m => m.level).join(', N')}.`
+            : 'No hay ningún MC abierto.'); return;
+        }
+        rungs.push({ line: ln, expr: identity(), coils: [], open: [], mcrClose: level });
+        while (mcStack.length && mcStack[mcStack.length - 1].level >= level) mcStack.pop();
+        return;
+      }
+
       bad(`Instrucción no reconocida "${op}"`,
-        'Consulta la ayuda (F1). Válidas: LD LDI AND ANI OR ORI ANB ORB MPS MRD MPP OUT SET RST END.');
+        'Consulta la ayuda (F1). Válidas: LD LDI AND ANI OR ORI ANB ORB MPS MRD MPP MC MCR OUT SET RST END.');
     });
 
     closeRung();
+
+    if (mcStack.length > 0){
+      warnings.push({
+        line: mcStack[mcStack.length - 1].line, text: '',
+        cause: mcStack.length === 1
+          ? 'Falta 1 MCR para cerrar la zona MC'
+          : `Faltan ${mcStack.length} MCR para cerrar las zonas MC`,
+        hint: 'Añade un MCR por cada MC (con el mismo nivel N). El diagrama se dibuja igual.',
+        severity: 'warning'
+      });
+    }
 
     if (sawInstr && !ended){
       errors.push({ line: rawLines.length, text: '', cause: 'Falta END al final del programa',
@@ -618,7 +683,7 @@ const Parser = (() => {
 })();
 /* ===== 03 LADDER (layout) ===== */
 const Ladder = (() => {
-  const CELL_W = 72, CELL_H = 80, GAP = 30, RAIL_L = 46;
+  const CELL_W = 72, CELL_H = 80, GAP = 30, RAIL_L = 46, MC_DX = 8;
 
   function nodeWidth(n){
     if (n.kind === 'contact') return 1;
@@ -644,25 +709,51 @@ const Ladder = (() => {
     let y = GAP;
     program.rungs.forEach(r => {
       const open = r.open || [];
+      const expr = r.expr || { kind: 'identity' };
       const openH = open.reduce((s, b) => s + nodeHeight(b), 0);
-      const exprH = nodeHeight(r.expr);
+      const exprH = nodeHeight(expr);
       const hasTC = r.coils.some(c => c.kind === 'timer' || c.kind === 'counter');
       const hCells = openH + Math.max(exprH, r.coils.length, 1);
-      const exprW = Math.max(nodeWidth(r.expr), ...open.map(nodeWidth));
-      bands.push({ rung: r, y, hCells, exprW, exprH, openH, hasTC });
+      const exprW = Math.max(nodeWidth(expr), ...open.map(nodeWidth));
+      bands.push({ rung: r, y, hCells, exprW, exprH, openH, hasTC, depth: 0, x0: RAIL_L, barX: 0 });
       y += hCells * CELL_H + GAP;
     });
+    // Zonas MC/MCR: cada nivel desplaza la barra maestra hacia la derecha
+    // (tras el MC la "barra de bus" pasa a un punto posterior, como en GX Works).
+    const levelBusX = [RAIL_L];
+    const openSectors = [], spans = [];
+    let depth = 0;
+    bands.forEach(b => {
+      b.depth = depth;
+      b.x0 = levelBusX[depth];
+      if (b.rung.mcOpen){
+        const barX = b.x0 + nodeWidth(b.rung.expr || { kind: 'identity' }) * CELL_W + MC_DX;
+        b.barX = barX;
+        openSectors.push({ level: b.rung.mcOpen.level, dev: b.rung.mcOpen.dev, yTop: b.y, barX, rung: b.rung });
+        depth++;
+        levelBusX[depth] = barX;
+      }
+      if (b.rung.mcrClose !== undefined){
+        while (openSectors.length && openSectors[openSectors.length - 1].level >= b.rung.mcrClose){
+          const o = openSectors.pop();
+          spans.push({ level: o.level, dev: o.dev, barX: o.barX, yTop: o.yTop, yBottom: b.y, rung: o.rung });
+        }
+        depth = b.rung.mcrClose;
+      }
+    });
+    const lastY = bands.length ? bands[bands.length - 1].y : GAP;
+    openSectors.forEach(o => spans.push({ level: o.level, dev: o.dev, barX: o.barX, yTop: o.yTop, yBottom: lastY, rung: o.rung }));
     const railR = Math.max(320,
-      ...bands.map(b => RAIL_L + (b.exprW + (b.hasTC ? 2.6 : 1.6)) * CELL_W));
+      ...bands.map(b => b.x0 + (b.exprW + (b.hasTC ? 2.6 : 1.6)) * CELL_W));
     return {
-      bands, railR,
+      bands, spans, railR, MC_DX,
       width: Math.ceil(railR + 30),
       height: bands.length ? y : GAP + 2 * CELL_H,
       CELL_W, CELL_H, GAP, RAIL_L
     };
   }
 
-  return { layout, nodeWidth, nodeHeight, CELL_W, CELL_H, GAP, RAIL_L };
+  return { layout, nodeWidth, nodeHeight, CELL_W, CELL_H, GAP, RAIL_L, MC_DX };
 })();
 // ==PURE-END==
 
@@ -672,6 +763,7 @@ const Renderer = (() => {
   const L = Ladder;
   let index;    // Map nodo -> {inEls, outEls, symEls}
   let coilEls;  // Map bobina -> {symEls, wires, valueEl}
+  let mcEls;    // Map rung(MC) -> [elementos de la barra maestra]
 
   const svgEl = () => document.getElementById('diagram');
 
@@ -699,6 +791,7 @@ const Renderer = (() => {
     while (s.firstChild) s.removeChild(s.firstChild);
     index = new Map();
     coilEls = new Map();
+    mcEls = new Map();
   }
 
   /* --- dibujo recursivo de un nodo --- */
@@ -710,14 +803,14 @@ const Renderer = (() => {
 
     if (node.kind === 'fork'){
       const e = reg(node);
-      const baseRes = drawNode(g, node.base, colForX(ctx.startX), rowTop,
-        { bandY: ctx.bandY, startX: ctx.startX, tails: ctx.tails });
+      const baseRes = drawNode(g, node.base, colForX(ctx.startX, ctx.x0), rowTop,
+        { bandY: ctx.bandY, startX: ctx.startX, tails: ctx.tails, x0: ctx.x0 });
       const splitX = baseRes.exitX;
       const cys = [], armExits = [];
       let rowCursor = rowTop;
       node.arms.forEach(arm => {
-        const r = drawNode(g, arm.node, colForX(splitX), rowCursor,
-          { bandY: ctx.bandY, startX: splitX, tails: ctx.tails });
+        const r = drawNode(g, arm.node, colForX(splitX, ctx.x0), rowCursor,
+          { bandY: ctx.bandY, startX: splitX, tails: ctx.tails, x0: ctx.x0 });
         cys.push(ctx.bandY + (rowCursor + 0.5) * L.CELL_H);
         armExits.push(r.exitX);
         if (ctx.tails) ctx.tails.push({ exitX: r.exitX, exitRow: rowCursor, coils: arm.coils });
@@ -730,7 +823,7 @@ const Renderer = (() => {
     if (node.kind === 'contact'){
       // Contacto centrado en su celda (72 px): símbolo en el centro y cables
       // simétricos a izquierda y derecha, como la rejilla de GX Works.
-      const x = L.RAIL_L + col * L.CELL_W;
+      const x = ctx.x0 + col * L.CELL_W;
       const cx = x + L.CELL_W / 2;
       const cy = ctx.bandY + (rowTop + 0.5) * L.CELL_H;
       const e = reg(node);
@@ -754,7 +847,7 @@ const Renderer = (() => {
     if (node.kind === 'series'){
       let cursorX = ctx.startX, rows = 0, exitRow = rowTop;
       node.children.forEach(c => {
-        const res = drawNode(g, c, colForX(cursorX), rowTop, { bandY: ctx.bandY, startX: cursorX, tails: ctx.tails });
+        const res = drawNode(g, c, colForX(cursorX, ctx.x0), rowTop, { bandY: ctx.bandY, startX: cursorX, tails: ctx.tails, x0: ctx.x0 });
         cursorX = res.exitX;
         rows = Math.max(rows, res.rows);
         exitRow = res.exitRow;
@@ -763,7 +856,7 @@ const Renderer = (() => {
     }
 
     // parallel
-    const x = L.RAIL_L + col * L.CELL_W;
+    const x = ctx.x0 + col * L.CELL_W;
     // Las ramas nacen en el límite de celda (la barra izquierda en el primer
     // nivel), no desplazadas: así cada rama arranca directo de la barra y los
     // nodos de grupos en serie coinciden en un único punto.
@@ -773,7 +866,7 @@ const Renderer = (() => {
     let rowCursor = rowTop;
     const cys = [], exits = [], branches = [];
     node.children.forEach(c => {
-      const r = drawNode(g, c, col, rowCursor, { bandY: ctx.bandY, startX: splitX, tails: ctx.tails });
+      const r = drawNode(g, c, col, rowCursor, { bandY: ctx.bandY, startX: splitX, tails: ctx.tails, x0: ctx.x0 });
       cys.push(ctx.bandY + (rowCursor + 0.5) * L.CELL_H);
       exits.push(r.exitX);
       branches.push({ c, r });
@@ -800,12 +893,12 @@ const Renderer = (() => {
     g.appendChild(l);
     return l;
   }
-  function colForX(x){ return Math.round((x - L.RAIL_L) / L.CELL_W); }
+  function colForX(x, x0){ return Math.round((x - x0) / L.CELL_W); }
 
   /* --- bobinas del rung (un grupo: bobinas apiladas desde startRow) --- */
   function drawCoilGroup(g, band, list, exprExitX, startRow){
     const bandY = band.y;
-    const bx = L.RAIL_L + band.exprW * L.CELL_W + 10;
+    const bx = band.x0 + band.exprW * L.CELL_W + 10;
     const cyRoot = bandY + (startRow + 0.5) * L.CELL_H;
     list.forEach((c, i) => {
       const cy = bandY + (startRow + i + 0.5) * L.CELL_H;
@@ -863,16 +956,34 @@ const Renderer = (() => {
       // Ramas LD suspendidas: se dibujan abiertas (al aire) arriba, sin bobina.
       let rowTop = 0;
       (b.rung.open || []).forEach(blk => {
-        drawNode(g, blk, 0, rowTop, { bandY: b.y, startX: L.RAIL_L });
+        drawNode(g, blk, 0, rowTop, { bandY: b.y, startX: b.x0, x0: b.x0 });
         rowTop += L.nodeHeight(blk);
       });
+      const expr = b.rung.expr || { kind: 'identity' };
       const tails = [];
-      const root = drawNode(g, b.rung.expr, 0, rowTop, { bandY: b.y, startX: L.RAIL_L, tails });
+      const root = drawNode(g, expr, 0, rowTop, { bandY: b.y, startX: b.x0, x0: b.x0, tails });
       if (tails.length){
         tails.forEach(t => drawCoilGroup(g, b, t.coils, t.exitX, t.exitRow));
       } else {
         drawCoilGroup(g, b, b.rung.coils, root.exitX, root.exitRow);
       }
+      // Conexión del rung de MC con su barra maestra, y pie del rung de MCR.
+      const cy = b.y + 0.5 * L.CELL_H;
+      if (b.rung.mcOpen) g.appendChild(lineEl(root.exitX, cy, b.barX, cy));
+      if (b.rung.mcrClose !== undefined) g.appendChild(lineEl(b.x0, cy, b.x0 + 40, cy));
+    });
+    // Barras verticales de control maestro (una por zona MC…MCR).
+    (layout.spans || []).forEach(sp => {
+      const yTop = sp.yTop + 0.5 * L.CELL_H;
+      const yBottom = sp.yBottom + 0.5 * L.CELL_H;
+      const g = el('g');
+      const bar = el('line', { x1: sp.barX, y1: yTop, x2: sp.barX, y2: yBottom, class: 'wire mcbar' });
+      g.appendChild(bar);
+      g.appendChild(txt(sp.barX + 4, sp.yTop - 6,
+        'MC N' + sp.level + (sp.dev ? ' ' + sp.dev : ''), 'mc', 'start'));
+      g.appendChild(txt(sp.barX + 46, sp.yBottom + 0.5 * L.CELL_H + 5, 'MCR N' + sp.level, 'mc', 'start'));
+      s.appendChild(g);
+      mcEls.set(sp.rung, [bar]);
     });
   }
 
@@ -906,7 +1017,11 @@ const Renderer = (() => {
     }
   }
 
-  function applyEnergy(nodeFlow, coilEnergy){
+  function applyEnergy(nodeFlow, coilEnergy, mcFlow){
+    if (mcEls) mcEls.forEach((els, rung) => {
+      const on = !!(mcFlow && mcFlow.get(rung));
+      els.forEach(x => x.classList.toggle('energized', on));
+    });
     index.forEach((e, node) => {
       const nf = nodeFlow.get(node) || { in: false, out: false };
       e.inEls.forEach(x => x.classList.toggle('energized', !!nf.in));
@@ -1078,13 +1193,26 @@ const Simulator = (() => {
 
   function scan(dry){
     if (!program) return;
-    const nf = new Map(), ce = new Map();
+    const nf = new Map(), ce = new Map(), mcFlow = new Map();
     const sink = (c, flow) => { ce.set(c, flow); applyCoil(c, flow, dry); };
+    const mcStack = [];   // niveles MC abiertos: { level, active }
     program.rungs.forEach(r => {
-      const flow = evalNode(r.expr, true, nf, sink);
+      const enclosing = mcStack.every(m => m.active);   // zona MC activa (bus)
+      if (r.mcOpen){
+        const cond = r.expr ? !!evalNode(r.expr, enclosing, nf, sink) : false;
+        if (r.mcOpen.dev) st[r.mcOpen.dev.charAt(0)][r.mcOpen.dev] = cond;
+        mcStack.push({ level: r.mcOpen.level, active: cond });
+        mcFlow.set(r, cond);
+        return;
+      }
+      if (r.mcrClose !== undefined){
+        while (mcStack.length && mcStack[mcStack.length - 1].level >= r.mcrClose) mcStack.pop();
+        return;
+      }
+      const flow = evalNode(r.expr, enclosing, nf, sink);
       if (!(r.expr && r.expr.kind === 'fork')) r.coils.forEach(c => sink(c, flow));
     });
-    Renderer.applyEnergy(nf, ce);
+    Renderer.applyEnergy(nf, ce, mcFlow);
     Renderer.updateValues(values());
   }
 
@@ -1592,6 +1720,7 @@ const UI = (() => {
       ['OR d / ORI d', 'Contacto NO / NC en paralelo.', 'OR Y0'],
       ['ANB / ORB', 'Serie / paralelo entre los dos últimos bloques (cada LD abre un bloque).', 'LD X0 · LD X1 · ORB'],
       ['MPS / MRD / MPP', 'Bifurcación de salidas divergentes: MPS guarda la condición común, MRD la relee y MPP la restaura. Cada rama lleva sus bobinas; se pueden anidar (un MPS dentro de una rama crea un punto de guardado nuevo). Dentro del bloque se admiten LD/LDI y ANB/ORB para armar sub-bloques en cada rama. Tras MPP, un AND/OR/OUT abre una rama hermana del bloque (igual que MRD) sin reabrir su nivel, así el siguiente MPP sube al bloque anterior.', 'LD X0 · MPS · LD X1 · OR X2 · ANB · OUT Y1 · MRD · AND X3 · OUT Y2 · MPP'],
+      ['MC N# [d] / MCR N#', 'Control maestro: agrupa rungs bajo una condición (MC) y los cierra (MCR). Niveles N0–N7, anidables. Con MC OFF no se ejecuta nada de la zona: se resetean las bobinas normales (los timers no retentivos y las salidas), mientras se retienen timers retentivos, contadores y lo fijado con SET/RST. MCR N# cierra además los niveles más profundos. El operando opcional (Y/M) replica el estado del MC; sin N se asume N0. Dentro de un MC la barra de bus se desplaza a la derecha.', 'LD X0 · MC N0 M100 · LD X1 · OUT Y0 · MCR N0'],
       ['OUT d', 'Bobina normal (Y o M).', 'OUT Y0'],
       ['SET d / RST d', 'Enclava / libera (Y, M) · resetea timers y contadores.', 'SET M0 · RST C0'],
       ['OUT T# K#', 'Temporizador TON de 100 ms, no retentivo. K50 = 5 s.', 'OUT T0 K50'],

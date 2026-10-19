@@ -51,7 +51,7 @@ Oportunidad: convertir la experiencia retro del handheld (escribir `LD X0` → E
 
 **Dentro del alcance:**
 - Consola de comandos (editor de texto multilínea, "netlist") con generación de ladder **en vivo** con cada Enter.
-- Dialecto Mitsubishi reducido: `LD LDI AND ANI OR ORI ANB ORB MPS MRD MPP OUT SET RST` + temporizadores `OUT T# K#` + contadores `OUT C# K#` + `END` + comentarios con `;`.
+- Dialecto Mitsubishi reducido: `LD LDI AND ANI OR ORI ANB ORB MPS MRD MPP MC MCR OUT SET RST` + temporizadores `OUT T# K#` + contadores `OUT C# K#` + `END` + comentarios con `;`.
 - Validación estricta por línea (rechaza la línea inválida con mensaje) **y** panel lateral de errores de todo el programa con número de línea.
 - Simulación interactiva: panel de interruptores para dispositivos X, ciclo de scan de 100 ms, resaltado de energía, RUN/PAUSE/RESET.
 - Persistencia: guardar/abrir proyecto JSON en disco (File System Access API, con respaldo por descarga) + **autoguardado** con recuperación de sesión.
@@ -152,6 +152,7 @@ Oportunidad: convertir la experiencia retro del handheld (escribir `LD X0` → E
 | `ANB` | `ANB` | Serie entre los dos últimos bloques | Une dos ramas en serie |
 | `ORB` | `ORB` | Paralelo entre los dos últimos bloques | Une dos ramas en paralelo |
 | `MPS` / `MRD` / `MPP` | `MPS` | Bifurcación de salidas divergentes: `MPS` guarda la condición común, `MRD` la relee sin borrarla y `MPP` la restaura. Cada rama (entre `MRD`/`MPP`) lleva sus propias bobinas. Dentro del bloque se admiten `LD`/`LDI`/`ANB`/`ORB` para formar sub-bloques en cada rama (como en Mitsubishi). Tras `MPP`, un `AND`/`OR`/`OUT` cuelga una rama hermana del bloque cerrado (equivalente a `MRD`) **sin reabrir su nivel de pila**, así el siguiente `MPP` sube un nivel más (no re-cierra el mismo bloque) | Conductor común con ramas verticales hacia varias bobinas |
+| `MC` / `MCR` | `MC N0 M100` · `MCR N0` | Control maestro: agrupa rungs bajo una condición. Niveles `N0`–`N7` anidables (sin `N#` ⇒ `N0`); el operando `Y/M` opcional replica el estado del MC. Con el `MC` en OFF no se ejecutan las instrucciones de la zona: se liberan las bobinas normales y los timers no retentivos, mientras **se retienen** timers retentivos, contadores y lo fijado con `SET`/`RST`. `MCR N#` cierra su nivel y los más profundos. Dentro de la zona el bus se desplaza a la derecha | Barra vertical `MC…MCR` con etiquetas de nivel/dispositivo |
 | `OUT` | `OUT Y0` | Bobina (también válida para M) | Bobina |
 | `SET` / `RST` | `SET M0` / `RST C0` | Enclavamiento / reset (Válido para Y, M, T, C) | Bobina S / bobina R |
 | `OUT T# K#` | `OUT T0 K50` | Temporizador TON, base 100 ms (K50 = 5 s), no retentivo | Caja de timer con valor |
@@ -184,7 +185,8 @@ La fuente de verdad es **el texto de la consola** (`code`); el ladder siempre se
 
 ```
 Programa → [Rung] + marcador END
-Rung     → { línea, expresión: Nodo, bobinas: [Bobina] }
+Rung     → { línea, expresión: Nodo, bobinas: [Bobina],
+             mcOpen?: { nivel: 0-7, disp: M|Y|null }, mcClose?: 0-7 }
 Nodo     → contacto(NO|NC, dispositivo)
           | serie([Nodo])
           | paralelo([Nodo])
@@ -194,6 +196,8 @@ Bobina   → out|set|rst en Y/M | timer(T#, K) | contador(C#, K)
 ```
 
 El bloque `MPS/MRD/MPP` se representa con un nodo `fork`: `base` es la condición común guardada por `MPS` y cada rama es un nodo **relativo** a esa base (comienza en el nodo neutro `identidad`, de modo que la base no se duplica en el diagrama). El simulador evalúa `base` una vez y cada rama con `base ∧ rama`, aplicando las bobinas propias de cada rama.
+
+El `MC`/`MCR` no introduce un nodo en el árbol de expresión: son propiedades del rung (`mcOpen`/`mcClose`). El rung de `MC` lleva la condición en `expresión` (sin bobinas) y el rung de `MCR` lleva una `identidad`. El simulador mantiene una pila de niveles abiertos y combina (`∧`) el estado del MC con la condición de cada rung de la zona; el layout dibuja las barras verticales a partir de esta pila, sin tocar la expresión.
 
 ---
 
@@ -209,6 +213,9 @@ El bloque `MPS/MRD/MPP` se representa con un nodo `fork`: `base` es la condició
 | `OUT`/`SET`/`RST`/`AND`/`OR` tras `MPP` | **Válido**: crea una rama hermana del bloque cerrado sobre su base (equivalente a `MRD`); no se encadena en serie ni se superpone |
 | `LD`/`LDI`/`ANB`/`ORB` dentro de un bloque `MPS`/`MRD`/`MPP` | **Válido**: forman sub-bloques dentro de cada rama (semántica Mitsubishi). `LD` apila el bloque actual de la rama y abre uno nuevo; `ANB`/`ORB` combinan usando la pila de la rama |
 | Bloques `LD` de una rama `MPS` sin combinar al cerrar la rama (`MRD`/`MPP`) | **Warning**: se dibuja igual; recuerda unirlos con `ANB`/`ORB` (la `identidad` de la base no cuenta como bloque pendiente) |
+| `MC`/`MCR` mal balanceados | `MCR` sin `MC` abierto → Error; `MC` sin `MCR` al cerrar el programa → **Warning** (el diagrama se dibuja igual). `MC N#` fuera de orden (nivel ≠ nº de MC abiertos) → Error |
+| `MC` sin condición, tras bobina, dentro de `MPS`, o con operando inválido | Error con línea y sugerencia (`MC N#` abre una zona; el rung debe llevar la condición y ninguna bobina) |
+| `MCR N#` con varios niveles abiertos | **Válido**: cierra el nivel `N#` y todos los más profundos |
 | Rung sin bobina antes del siguiente `LD` | Error "El rung de la línea N no tiene bobina (OUT/SET/RST)" |
 | Bloques `LD` sin combinar al llegar la bobina | **Warning + rama abierta**: cada `LD` abre una rama nueva en la barra izquierda; los bloques sin `ANB`/`ORB` se dibujan "al aire" (un extremo colgando) y el aviso recuerda combinarlos con `ANB`/`ORB` |
 | Falta `END` o hay más de uno | Error con línea y sugerencia |
